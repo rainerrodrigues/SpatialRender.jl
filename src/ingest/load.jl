@@ -58,8 +58,19 @@ Load any supported file into `scene` in the scene's frame.
 When the scene is still empty and uses an `IdentityFrame`, georeferenced
 data sets the frame: a LAS file sets an `OffsetFrame` at its centre, a
 GeoJSON file an `ENUFrame` at its centre. Later files reuse that frame.
+A directory written by [`build_octree`](@ref) loads as an [`OctreeCloud`](@ref).
 """
 function load!(scene::Scene, path::AbstractString; kwargs...)
+    if isdir(path) && isfile(joinpath(path, "octree.json"))        # converted with build_octree
+        o = OctreeCloud(path; kwargs...)
+        if isempty(scene.layers) && scene.frame isa IdentityFrame
+            scene.frame = o.frame
+        elseif scene.frame isa OffsetFrame
+            set_pose!(o, pose_matrix(o.frame.origin - scene.frame.origin))   # align origins
+        end
+        add!(scene, o)
+        return scene
+    end
     ext = lowercase(splitext(path)[2])
     adopt = isempty(scene.layers) && scene.frame isa IdentityFrame
     fr = adopt ? nothing : scene.frame

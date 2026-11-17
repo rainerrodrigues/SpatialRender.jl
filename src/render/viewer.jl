@@ -160,7 +160,7 @@ function _on_key(v::Viewer, key, action)
         ctl.mode == FlyMode && sym in (:w, :a, :s, :d, :q, :e) && return
     end
     action == GLFW.PRESS || action == GLFW.REPEAT || return
-    pcs = [l for l in r.scene.layers if l isa PointCloud || l isa StreamingPointCloud]
+    pcs = [l for l in r.scene.layers if l isa PointCloud || l isa StreamingPointCloud || l isa OctreeCloud]
     if key == GLFW.KEY_ESCAPE
         GLFW.SetWindowShouldClose(v.window, true)
     elseif key == GLFW.KEY_F
@@ -379,6 +379,13 @@ function render_offscreen(scene::Scene; width::Integer=1024, height::Integer=768
             frame!(cam, b)
         end
         render_frame!(r, cam, width, height)
+        # out-of-core layers: load what the view asks for, redraw, until stable
+        # (one extra frame per octree level, not per node)
+        for _ in 1:64
+            streaming(r) || break
+            drain!(r)
+            render_frame!(r, cam, width, height)
+        end
         glFinish()
         img = read_framebuffer(width, height)
         release!(r)

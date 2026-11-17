@@ -21,6 +21,12 @@ function random_mesh(rng, n)
     TriMesh(verts, idx)
 end
 
+# Allocation checks run inside functions: at test-block scope Julia 1.10
+# counts the boxing of captured variables, not the call itself.
+alloc_raycast(bvh, r) = (raycast(bvh, r); @allocated raycast(bvh, r))
+alloc_cull(ix, fr, eye) = (cull!(ix, fr; eye, pixels_per_radian=800.0);
+                           @allocated cull!(ix, fr; eye, pixels_per_radian=800.0))
+
 brute_ray(m, r) = minimum((SpatialRender._moller_trumbore(r, a, b - a, c - a) for (a, b, c) in
                            (triangle(m, t) for t in 1:ntriangles(m))); init=Inf32)
 
@@ -219,8 +225,7 @@ end
     end
     @test hits > 20
     r = Ray(Vec3f(0, 0, 50), Vec3f(0, 0, -1))
-    raycast(bvh, r)
-    @test (@allocated raycast(bvh, r)) == 0
+    @test alloc_raycast(bvh, r) == 0
 end
 
 @testset "point index, culling, LOD, picking" begin
@@ -250,8 +255,7 @@ end
     @test count(drawn) < length(pc)                                 # but culls
     @test vis.npoints == count(drawn)
     @test vis.n <= nchunks(ix)
-    cull!(ix, fr; eye=Vec3f(cam.position), pixels_per_radian=800.0)
-    @test (@allocated cull!(ix, fr; eye=Vec3f(cam.position), pixels_per_radian=800.0)) == 0
+    @test alloc_cull(ix, fr, Vec3f(cam.position)) == 0
     lod = cull!(ix, fr; eye=Vec3f(cam.position), pixels_per_radian=200.0, density=0.05)
     @test lod.npoints < count(drawn)
 
@@ -440,6 +444,58 @@ end
     @test length(segs) == 2 + 1 + 2                              # marker ×, plate, X strokes
 end
 
+@testset "out-of-core octree" begin
+    using SpatialRender: node_points, select_nodes!, split_axes, _bucket_digits
+    @test split_axes(Vec3f(400, 400, 12)) == (true, true, false)
+    @test split_axes(Vec3f(10, 10, 10)) == (true, true, true)
+    @test _bucket_digits((3, 0, 0), [(true, true, false), (true, true, false)], (2, 2, 0)) == "11"
+    rng = Xoshiro(9)
+    n = 200_000
+    pts = [Vec3f(400rand(rng) - 200, 300rand(rng) - 150, 3sin(i / 1000) + 0.05randn(rng)) for i in 1:n]
+    pc = PointCloud(pts; intensity=rand(rng, n))
+    for (src, dir) in ((pc, tmp("oct_pc")), (save_las(tmp("oct.las"), pc; frame=OffsetFrame(5e5, 4e6, 100.0)), tmp("oct_las")))
+        build_octree(src, dir; node_capacity=4000, bucket_points=20_000)
+        o = OctreeCloud(dir)
+        @test length(o) == n
+        @test o.nodes[1].name == "r" && length(o.nodes[1].children) == 4     # flat data → quadtree root
+        bd = maximum(length(nd.name) - 1 for nd in o.nodes if nd.depth == 0 || true)
+        # nothing lost: the bucket level and below store every point exactly once
+        buckets = minimum(nd.depth for nd in o.nodes if isempty(nd.children))
+        @test all(nd.count <= 4000 for nd in o.nodes)
+        inside = all(SpatialRender.contains_point(SpatialRender.expand(o.nodes[i].box, 1e-3), v.position)
+                     for i in eachindex(o.nodes) for v in node_points(o, i))
+        @test inside
+        lvl = maximum(nd.depth for nd in o.nodes)
+        @test lvl >= 2
+        if src isa PointCloud
+            # positions survive exactly (relative to the stored origin)
+            orig = Set(round.(v.position .- Vec3f(o.frame.origin), digits=3) for v in pc.vertices)
+            k = 0
+            for v in node_points(o, length(o.nodes))
+                k += round.(v.position, digits=3) in orig
+            end
+            @test k == o.nodes[end].count
+        end
+    end
+    o = OctreeCloud(tmp("oct_pc"); point_budget=30_000)
+    # every point stored once below the coarse levels
+    d = SpatialRender.JSON3.read(read(joinpath(tmp("oct_pc"), "octree.json"), String)).bucket_depth
+    @test sum(nd.count for nd in o.nodes if nd.depth >= d) == n
+    cam = Camera(position=Vec3d(0, -400, 250), target=Vec3d(0, 0, 0), aspect=1.5)
+    vp = view_projection(cam)
+    out = Int32[]; wanted = Int32[]
+    loaded = Set{Int32}([1])
+    select_nodes!(out, wanted, o, frustum_from_matrix(vp), Vec3f(cam.position), 800f0, i -> i in loaded)
+    @test out == [1] && !isempty(wanted) && all(w -> w in o.nodes[1].children, wanted)
+    union!(loaded, Int32.(eachindex(o.nodes)))            # pretend everything is resident
+    select_nodes!(out, wanted, o, frustum_from_matrix(vp), Vec3f(cam.position), 800f0, i -> i in loaded)
+    @test isempty(wanted) && sum(o.nodes[i].count for i in out) <= 30_000 && length(out) > 1
+    # a view of empty space selects nothing
+    away = Camera(position=Vec3d(0, 0, 5000), target=Vec3d(0, 0, 10_000))
+    select_nodes!(out, wanted, o, frustum_from_matrix(view_projection(away)), Vec3f(away.position), 800f0, i -> true)
+    @test isempty(out)
+end
+
 @testset "PNG writer" begin
     img = [(UInt8(x), UInt8(y), 0x80) for y in 1:3, x in 1:4]
     write_png(tmp("t.png"), img)
@@ -534,6 +590,24 @@ end
         annotate!(notes, Vec3f(-1.5, -1.5, 0), "HELLO"; color=Vec4f(1, 0, 0, 1), size=14)
         lab = render_offscreen(s3; width=96, height=96, camera=deepcopy(cam3), settings=RenderSettings(grid=false))
         @test count(p -> p[1] > 180 && p[2] < 90, lab) > 20       # red text visible over the points
+
+        # out-of-core: offscreen render streams nodes until the view is complete
+        s4 = Scene(); load!(s4, tmp("oct_pc"); point_budget=50_000)
+        @test s4.frame isa OffsetFrame
+        img4 = render_offscreen(s4; width=160, height=120, settings=RenderSettings(grid=false))
+        bg8 = round.(UInt8, RenderSettings().background[1:3] .* 255)
+        @test count(p -> maximum(abs.(Int.(p) .- Int.(Tuple(bg8)))) > 8, img4) > 0.1 * length(img4)
+        SpatialRender.with_hidden_context() do
+            r = Renderer(s4)
+            cam4 = Camera(position=Vec3d(0, -400, 250), target=Vec3d(0, 0, 0))
+            render_frame!(r, cam4, 160, 120)
+            for _ in 1:20
+                SpatialRender.streaming(r) || break
+                SpatialRender.drain!(r); render_frame!(r, cam4, 160, 120)
+            end
+            @test SpatialRender.OctreeCloud(tmp("oct_pc")).nodes[1].count < r.stats.points <= 50_000   # refined past the root
+            SpatialRender.release!(r)
+        end
     end
 end
 

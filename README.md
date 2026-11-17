@@ -9,9 +9,11 @@ that runs and tests headless.
 
 ![demo](docs/demo.png)
 
-*`examples/demo.jl`: a cycloidal-drive disc (CAD), 480k LiDAR points after
+![live](docs/live.png)
+
+*`examples/demo.jl` (top): a cycloidal-drive disc (CAD), 480k LiDAR points after
 outlier removal, GIS parcels reprojected from lon/lat into ENU, and a UAV
-survey trajectory colored by time.*
+survey trajectory colored by time. `examples/live.jl` (bottom): a rover streaming a simulated LiDAR, points colored by scan age.*
 
 ## Quick start
 
@@ -26,8 +28,10 @@ open_viewer(scene)
 ```
 
 ```bash
-julia --project=. examples/demo.jl            # interactive
-julia --project=. examples/demo.jl shot.png   # offscreen screenshot
+julia -t auto --project=. examples/demo.jl            # interactive
+julia -t auto --project=. examples/demo.jl shot.png   # offscreen screenshot
+julia -t auto --project=. examples/live.jl            # rover + streaming LiDAR
+julia -t auto --project=. examples/octree.jl big.las  # out-of-core survey
 ```
 
 ## What is in the box
@@ -43,6 +47,11 @@ julia --project=. examples/demo.jl shot.png   # offscreen screenshot
 | **Shaders** | Points: pixel- or world-sized round splats colored by height / intensity / ASPRS class / RGB (Turbo map). Meshes: Blinn-Phong headlight, hemisphere ambient, two-sided, wireframe overlay. Lines: screen-space, anti-aliased, near-plane clipped instanced ribbons |
 | **Shader tooling** | Programs cached per context by source hash; `validate_shaders()` checks every stage with `glslangValidator` (CI, no GPU) or the live driver |
 | **Camera** | Quaternion camera, turntable orbit (pitch-clamped), pan, zoom, fly mode, frame-all, top view, ortho toggle, pick-to-pivot |
+| **Poses** | Every layer has a pose (`set_pose!(layer, position, Quat)` or a 4×4 matrix). Moving a layer is one uniform update; culling, LOD and picking run in the layer's own frame |
+| **Live data** | `StreamingPointCloud` ring buffer: `push_scan!(layer, points; pose)` from any thread or task. Only dirty ranges are uploaded (`glBufferSubData`), nothing is re-indexed, and memory stays bounded. Optional coloring by scan age |
+| **Out-of-core** | `build_octree(las, dir)` converts in streaming passes; peak RAM is one bucket (~4M points by default), not the survey. Nodes split only along long axes, so flat surveys become quadtrees. `OctreeCloud` streams nodes by screen size within a point budget, on a background thread, with LRU eviction |
+| **Eye-dome lighting** | Screen-space log-depth shading on points and meshes (`B` toggles it) |
+| **Annotations** | Labels (`annotate!`) and measurements (`measure!`: distance, Δz, slope) in an original stroke font, so no font files are needed; measure mode in the viewer |
 | **Output** | Interactive window; `render_offscreen` / `screenshot` to PNG (dependency-free writer) for CI and reports |
 
 ## Viewer controls
@@ -56,13 +65,44 @@ julia --project=. examples/demo.jl shot.png   # offscreen screenshot
 | double-click | pick: set the pivot and log the point in local + source coordinates | same |
 
 `Tab` switches orbit ↔ fly · `F` frame all · `T` top view · `O` ortho ·
-`1`–`4` color by height / intensity / class / RGB · `+`/`-` point size ·
+`1`–`5` color by height / intensity / class / RGB / scan age · `+`/`-` point size ·
 `P` pixel ↔ world point size · `L` LOD on/off · `M` wireframe · `G` grid ·
+`B` eye-dome lighting · `R` measure mode (click two points; `Backspace` undoes) ·
 `F12` screenshot · `H` help · `Esc` close.
 
 Pass `block = false` to get the `Viewer` back and drive it yourself
 (`step!(viewer)`), for example from a robot's update loop. Layers added to the
 scene while it is open are uploaded on the next frame.
+
+## Live data and poses
+
+```julia
+scene = Scene()
+rover = add!(scene, load_stl("rover.stl"))
+lidar = add!(scene, StreamingPointCloud(2_000_000; max_age = 100))   # newest 2M points
+v = open_viewer(scene; block = false)
+
+Threads.@spawn for msg in sensor_feed           # any thread: updates are locked
+    set_pose!(rover, msg.position, msg.orientation)
+    push_scan!(lidar, msg.points; pose = (msg.sensor_position, msg.orientation))
+end
+run!(v)
+```
+
+`examples/live.jl` simulates this with a ray-cast 16-beam LiDAR at 10 Hz.
+Use `touch!(layer)` after editing a layer's vertices in place.
+
+## Large surveys
+
+```julia
+build_octree("county.las", "county_octree")    # once; streams the file, bounded RAM
+scene = Scene()
+load!(scene, "county_octree"; point_budget = 4_000_000)
+open_viewer(scene)
+```
+
+A 3M-point file converts in about 5 s. Coarse octree levels add about 10%
+storage over the raw points.
 
 ## Point cloud cleanup
 
@@ -94,6 +134,11 @@ when using both.
 - **LAZ** needs `laszip` or `pdal` on `PATH`.
 - **Projected GIS layers** need an `OffsetFrame`, or reprojection to EPSG:4326
   for an `ENUFrame`. There is no PROJ dependency.
+- Out-of-core clouds show density steps between refined and unrefined nodes
+  when the point budget is much smaller than the visible data. They are not
+  pickable yet: double-click and measure mode work on in-memory layers only.
+- On WSL2, OpenGL often falls back to Mesa's CPU rasterizer (llvmpipe);
+  the viewer warns when that happens. Rendering is correct but slow.
 - The backend is OpenGL 4.1 core (the newest macOS supports), not WebGPU.
   Rendering is isolated in `src/render/`, so another backend can replace it
   without touching the core.
@@ -104,8 +149,18 @@ when using both.
 julia --project=. -e 'using Pkg; Pkg.test()'
 ```
 
-556 tests: frames, every reader (round trips), filters, BVH against brute
-force, culling conservativeness and zero allocation, picking, camera and
-controller state machine, PNG. The GPU tests (shader validation, offscreen
-render, program cache) run when an OpenGL 4.1 context can be created and are
-skipped otherwise.
+993 tests covering:
+- frames and every reader (round trips);
+- filters;
+- BVH against brute force, culling conservativeness and zero allocation;
+- picking, including posed and scaled layers;
+- the streaming ring buffer, including concurrent producers;
+- the stroke font and annotations;
+- octree invariants (no lost points, every point inside its node) and node
+  selection;
+- the camera, the controller state machine, and PNG output.
+
+The GPU tests (shader validation, offscreen rendering, EDL, poses, re-upload
+on `touch!`, octree streaming) run when an OpenGL 4.1 context can be created
+and are skipped otherwise. CI runs them under Xvfb with Mesa on Julia 1.10
+and the current release.

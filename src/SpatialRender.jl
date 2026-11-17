@@ -60,6 +60,9 @@ include("index/pointindex.jl")
 include("index/frustum.jl")
 include("index/raycast.jl")
 
+include("octree/build.jl")
+include("octree/octree.jl")
+
 include("camera/camera.jl")
 include("camera/controller.jl")
 
@@ -69,6 +72,7 @@ include("render/gl/shaders_src.jl")
 include("render/gl/program.jl")
 include("render/gl/buffers.jl")
 include("render/gl/pipelines.jl")
+include("render/gl/octree_gl.jl")
 include("render/gl/renderer.jl")
 include("render/viewer.jl")
 
@@ -81,6 +85,8 @@ export Scene, add!, layers, bounds, ColorMode, COLOR_HEIGHT, COLOR_INTENSITY,
 # poses and live data
 export set_pose!, pose, pose_matrix, touch!, world_bounds, with_update_lock,
        StreamingPointCloud, push_scan!
+# out-of-core point clouds
+export build_octree, OctreeCloud
 # annotations
 export Label, Annotations, annotate!, measure!, undo!
 # frames

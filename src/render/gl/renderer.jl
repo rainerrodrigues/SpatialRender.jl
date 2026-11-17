@@ -126,6 +126,12 @@ local_box(g::GPULines, l) = g.box
 local_box(g::GPUStream, l) = bounds(l)
 local_box(g::GPUAnnotations, l) = bounds(l)
 
+"Are any out-of-core layers still loading nodes for the last frame's view?"
+streaming(r::Renderer) = any(g -> g isa GPUOctree && streaming(g), values(r.gpu))
+
+"Finish all outstanding out-of-core loads (blocking)."
+drain!(r::Renderer) = foreach(g -> g isa GPUOctree && drain!(g), values(r.gpu))
+
 "Scene bounds with current poses (cheap: one box per layer)."
 world_box(r::Renderer) = reduce(union, (transform_box(l.model, local_box(r.gpu[l], l))
                                         for l in r.scene.layers if l.visible && haskey(r.gpu, l));
@@ -172,7 +178,7 @@ function _render_frame!(r::Renderer, cam::Camera, w::Integer, h::Integer)
         l isa TriMesh && l.visible && (nt += draw!(r.gpu[l], l, r.mesh, fc, s))
     end
     for l in r.scene.layers                      # pass 2: points
-        (l isa PointCloud || l isa StreamingPointCloud) && l.visible &&
+        (l isa PointCloud || l isa StreamingPointCloud || l isa OctreeCloud) && l.visible &&
             (np += draw!(r.gpu[l], l, r.points, fc, s))
     end
     if s.edl                                     # composite with eye-dome lighting
