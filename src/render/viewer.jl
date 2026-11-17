@@ -19,6 +19,27 @@ function _make_current(win)
     return CURRENT_CONTEXT[]
 end
 
+"""
+    gl_info() -> (vendor, renderer, version, software)
+
+Describe the current GL context; `software` is true for CPU rasterisers
+(llvmpipe, softpipe, SwiftShader, Microsoft Basic Render).
+"""
+function gl_info()
+    str(x) = (p = glGetString(x); p == C_NULL ? "" : unsafe_string(p))
+    ren = str(GL_RENDERER)
+    sw = occursin(r"llvmpipe|softpipe|swrast|SwiftShader|Basic Render"i, ren)
+    return (vendor=str(GL_VENDOR), renderer=ren, version=str(GL_VERSION), software=sw)
+end
+
+function warn_if_software()
+    info = gl_info()
+    info.software && @warn """OpenGL is running on the CPU ($(info.renderer)); frame rates will be low.
+        On WSL2 this usually means Mesa could not open the GPU through /dev/dxg: update the
+        Windows GPU driver and WSL (`wsl --update`), and check that `glxinfo -B` reports `D3D12`."""
+    return info
+end
+
 "Run `f()` with a hidden 1×1 GL 4.1 context current (validation, offscreen work)."
 function with_hidden_context(f)
     _window_hints(visible=false, samples=0)
@@ -60,7 +81,7 @@ SpatialRender controls
   W A S D Q E    fly (shift: faster)       Tab   orbit <-> fly
   double-click   pick: set pivot and print the point
   F  frame all    T  top view    O  ortho / perspective
-  1 height  2 intensity  3 classification  4 RGB   (point colors)
+  1 height  2 intensity  3 classification  4 RGB  5 scan age   (point colors)
   + / -  point size    P  pixel / world point size    L  LOD on/off
   M  mesh wireframe    G  grid    H  help    S-shot: F12    Esc  close
 """
@@ -82,6 +103,7 @@ function open_viewer(scene::Scene; width::Integer=1280, height::Integer=800,
     ctx = _make_current(win)
     GLFW.SwapInterval(vsync ? 1 : 0)
     glEnable(GL_MULTISAMPLE)
+    warn_if_software()
     r = Renderer(scene; settings)
     cam = something(camera, Camera())
     camera === nothing && frame!(cam, r.box)
@@ -129,7 +151,7 @@ function _on_key(v::Viewer, key, action)
         ctl.mode == FlyMode && sym in (:w, :a, :s, :d, :q, :e) && return
     end
     action == GLFW.PRESS || action == GLFW.REPEAT || return
-    pcs = collect(layers(r.scene, PointCloud))
+    pcs = [l for l in r.scene.layers if l isa PointCloud || l isa StreamingPointCloud]
     if key == GLFW.KEY_ESCAPE
         GLFW.SetWindowShouldClose(v.window, true)
     elseif key == GLFW.KEY_F
@@ -140,7 +162,7 @@ function _on_key(v::Viewer, key, action)
         look_at!(cam, tgt)
     elseif key == GLFW.KEY_O
         cam.ortho = !cam.ortho
-    elseif key in (GLFW.KEY_1, GLFW.KEY_2, GLFW.KEY_3, GLFW.KEY_4)
+    elseif key in (GLFW.KEY_1, GLFW.KEY_2, GLFW.KEY_3, GLFW.KEY_4, GLFW.KEY_5)
         m = Int32(Int(key) - Int(GLFW.KEY_1))
         foreach(pc -> pc.color_mode = m, pcs)
     elseif key in (GLFW.KEY_EQUAL, GLFW.KEY_KP_ADD)

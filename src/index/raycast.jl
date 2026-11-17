@@ -55,13 +55,24 @@ function raycast(items::AbstractVector, r::Ray; angle::Real=0.003)
     hit = NO_HIT
     for (layer, accel) in items
         layer.visible || continue
+        # ray in the layer's frame; `s` converts layer distances back to scene distances
+        M = layer.model
+        lr, s = M === IDENTITY4 ? (r, 1f0) : _local_ray(M, r)
         if accel isa BVH
-            t, i = raycast(accel, r; tmax=hit.t)
-            t < hit.t && (hit = RayHit(t, r(t), layer, i))
+            t, i = raycast(accel, lr; tmax=hit.t * s)
+            t / s < hit.t && (hit = RayHit(t / s, r(t / s), layer, i))
         elseif accel isa PointIndex
-            t, i = pick_point(layer, accel, r; angle)
-            t < hit.t && (hit = RayHit(t, layer.vertices[i].position, layer, i))
+            t, i = pick_point(layer, accel, lr; angle)
+            t / s < hit.t && (hit = RayHit(t / s, transform_point(M, layer.vertices[i].position), layer, i))
         end
     end
     return hit
+end
+
+function _local_ray(M::Mat4f, r::Ray)
+    Mi = inverse_pose(M)
+    o = transform_point(Mi, r.origin)
+    d = SMatrix{3, 3, Float32, 9}(Mi[1, 1], Mi[2, 1], Mi[3, 1], Mi[1, 2], Mi[2, 2], Mi[3, 2],
+                                  Mi[1, 3], Mi[2, 3], Mi[3, 3]) * r.dir
+    return Ray(o, d), norm(d)
 end

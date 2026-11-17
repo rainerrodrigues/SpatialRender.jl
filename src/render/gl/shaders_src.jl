@@ -38,12 +38,16 @@ layout(location = 0) in vec3 a_pos;
 layout(location = 1) in float a_intensity;
 layout(location = 2) in vec4 a_rgba;
 layout(location = 3) in uint a_class;
+layout(location = 4) in uint a_flags;    // streaming layers: scan sequence number (mod 256)
 
 uniform mat4 u_vp;
+uniform mat4 u_model;
 uniform int u_size_mode;        // 0: constant pixels, 1: world size (perspective)
 uniform float u_point_size;     // pixels (mode 0) or metres (mode 1)
 uniform float u_proj_scale;     // viewport height / (2 tan(fov / 2))
-uniform int u_color_mode;       // 0 height, 1 intensity, 2 classification, 3 rgb
+uniform int u_color_mode;       // 0 height, 1 intensity, 2 classification, 3 rgb, 4 scan age
+uniform int u_seq;              // newest scan sequence number (age mode)
+uniform float u_max_age;        // age (in scans) mapped to the end of the colormap
 uniform vec2 u_zrange;
 uniform vec4 u_class_colors[32];
 uniform int u_highlight;        // 0-based vertex id to highlight, -1 none
@@ -53,15 +57,20 @@ out vec4 v_color;
 $GLSL_TURBO
 
 void main() {
-    vec4 clip = u_vp * vec4(a_pos, 1.0);
+    vec4 world = u_model * vec4(a_pos, 1.0);
+    vec4 clip = u_vp * world;
     gl_Position = clip;
     float px = u_size_mode == 0 ? u_point_size
                                 : u_point_size * u_proj_scale / max(clip.w, 1e-4);
     vec3 c;
-    if (u_color_mode == 0)      c = turbo((a_pos.z - u_zrange.x) / max(u_zrange.y - u_zrange.x, 1e-6));
+    if (u_color_mode == 0)      c = turbo((world.z - u_zrange.x) / max(u_zrange.y - u_zrange.x, 1e-6));
     else if (u_color_mode == 1) c = vec3(pow(a_intensity, 0.6));
     else if (u_color_mode == 2) c = u_class_colors[min(a_class, 31u)].rgb;
-    else                        c = a_rgba.rgb;
+    else if (u_color_mode == 3) c = a_rgba.rgb;
+    else {
+        float age = float((uint(u_seq) - a_flags) & 255u) / max(u_max_age, 1.0);
+        c = turbo(1.0 - clamp(age, 0.0, 1.0)) * (1.0 - 0.55 * clamp(age, 0.0, 1.0));
+    }
     if (gl_VertexID == u_highlight) { c = vec3(1.0, 0.1, 0.9); px = max(px * 3.0, 9.0); }
     gl_PointSize = clamp(px, 1.0, 64.0);
     v_color = vec4(c, 1.0);
@@ -85,15 +94,17 @@ layout(location = 1) in vec3 a_normal;
 layout(location = 2) in vec2 a_uv;
 
 uniform mat4 u_vp;
-uniform vec3 u_eye;
+uniform mat4 u_model;
+uniform mat3 u_normal;          // inverse-transpose of the model's 3×3 part
 
 out vec3 v_pos;
 out vec3 v_normal;
 
 void main() {
-    v_pos = a_pos;
-    v_normal = a_normal;
-    gl_Position = u_vp * vec4(a_pos, 1.0);
+    vec4 world = u_model * vec4(a_pos, 1.0);
+    v_pos = world.xyz;
+    v_normal = u_normal * a_normal;
+    gl_Position = u_vp * world;
 }
 """, GLSL_HEADER * """
 in vec3 v_pos;
@@ -126,6 +137,7 @@ layout(location = 2) in vec4 a_color;    // per instance
 layout(location = 3) in vec2 a_corner;   // per vertex: (t ∈ {0,1}, side ∈ {-1,1})
 
 uniform mat4 u_vp;
+uniform mat4 u_model;
 uniform vec2 u_viewport;
 uniform float u_width;                   // pixels
 
@@ -134,8 +146,8 @@ out float v_dist;                        // signed pixels from the centre line
 out float v_half;
 
 void main() {
-    vec4 ca = u_vp * vec4(a_a, 1.0);
-    vec4 cb = u_vp * vec4(a_b, 1.0);
+    vec4 ca = u_vp * (u_model * vec4(a_a, 1.0));
+    vec4 cb = u_vp * (u_model * vec4(a_b, 1.0));
     // clip the segment against the near plane (w > eps) before dividing
     const float eps = 1e-5;
     if (ca.w < eps && cb.w < eps) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }

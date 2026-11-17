@@ -33,20 +33,40 @@ struct FrameContext
     pixels_per_radian::Float32
 end
 
+# Frustum / eye in a layer's own coordinates: planes of VP·M are the
+# frustum expressed in the layer frame, so chunk boxes never need transforming.
+@inline function local_view(fc::FrameContext, M::Mat4f)
+    M === IDENTITY4 && return fc.frustum, fc.eye
+    return frustum_from_matrix(fc.vp * M), transform_point(inverse_pose(M), fc.eye)
+end
+
+function _point_uniforms!(p::GLProgram, fc::FrameContext, s::RenderSettings, M::Mat4f,
+                          size, color_mode, zr::Vec2f)
+    glUseProgram(p.id)
+    setuniform(p, :u_vp, fc.vp)
+    setuniform(p, :u_model, M)
+    world = s.point_size_mode == :world
+    setuniform(p, :u_size_mode, world ? 1 : 0)
+    setuniform(p, :u_point_size, world ? s.world_point_size : size)
+    setuniform(p, :u_proj_scale, fc.proj_scale)
+    setuniform(p, :u_color_mode, color_mode)
+    setuniform(p, :u_zrange, zr)
+    setuniform(p, :u_round, s.round_points ? 1 : 0)
+end
+
+function _zrange(M, box)
+    b = transform_box(M, box)
+    isempty(b) ? Vec2f(0, 1) : Vec2f(b.lo[3], b.hi[3])
+end
+
 function draw!(g::GPUPoints, pc::PointCloud, p::GLProgram, fc::FrameContext, s::RenderSettings)
-    vis = cull!(g.index, fc.frustum; eye=fc.eye,
+    fr, eye = local_view(fc, pc.model)
+    vis = cull!(g.index, fr; eye,
                 pixels_per_radian=s.lod_density == Inf ? Inf : fc.pixels_per_radian,
                 density=s.lod_density)
     vis.n == 0 && return 0
-    glUseProgram(p.id)
-    setuniform(p, :u_vp, fc.vp)
-    world = s.point_size_mode == :world
-    setuniform(p, :u_size_mode, world ? 1 : 0)
-    setuniform(p, :u_point_size, world ? s.world_point_size : pc.point_size)
-    setuniform(p, :u_proj_scale, fc.proj_scale)
-    setuniform(p, :u_color_mode, pc.color_mode)
-    setuniform(p, :u_zrange, g.zrange)
-    setuniform(p, :u_round, s.round_points ? 1 : 0)
+    _point_uniforms!(p, fc, s, pc.model, pc.point_size, pc.color_mode, _zrange(pc.model, g.index.bounds))
+    setuniform(p, :u_seq, 0)
     hl = s.highlight[1] === pc ? s.highlight[2] - 1 : -1
     setuniform(p, :u_highlight, hl)
     glBindVertexArray(g.vao)
@@ -55,10 +75,29 @@ function draw!(g::GPUPoints, pc::PointCloud, p::GLProgram, fc::FrameContext, s::
     return vis.npoints
 end
 
+function draw!(g::GPUStream, sp::StreamingPointCloud, p::GLProgram, fc::FrameContext, s::RenderSettings)
+    sync_stream!(g, sp)                    # upload dirty ranges only
+    n = length(sp)
+    n == 0 && return 0
+    box = bounds(sp)
+    fr, _ = local_view(fc, sp.model)
+    intersects(fr, box) || return 0
+    _point_uniforms!(p, fc, s, sp.model, sp.point_size, sp.color_mode, _zrange(sp.model, box))
+    setuniform(p, :u_seq, sp.seq)
+    setuniform(p, :u_max_age, sp.max_age)
+    setuniform(p, :u_highlight, -1)
+    glBindVertexArray(g.vao)
+    glDrawArrays(GL_POINTS, 0, n)
+    return n
+end
+
 function draw!(g::GPUMesh, m::TriMesh, p::GLProgram, fc::FrameContext, s::RenderSettings)
-    intersects(fc.frustum, g.box) || return 0
+    fr, _ = local_view(fc, m.model)
+    intersects(fr, g.box) || return 0
     glUseProgram(p.id)
     setuniform(p, :u_vp, fc.vp)
+    setuniform(p, :u_model, m.model)
+    setuniform(p, :u_normal, normal_matrix(m.model))
     setuniform(p, :u_eye, fc.eye)
     setuniform(p, :u_color, m.color)
     setuniform(p, :u_flat, 0)
@@ -80,9 +119,12 @@ function draw!(g::GPUMesh, m::TriMesh, p::GLProgram, fc::FrameContext, s::Render
 end
 
 function draw!(g::GPULines, l::LineLayer, p::GLProgram, fc::FrameContext, s::RenderSettings)
-    (g.count == 0 || !intersects(fc.frustum, g.box)) && return 0
+    g.count == 0 && return 0
+    fr, _ = local_view(fc, l.model)
+    intersects(fr, g.box) || return 0
     glUseProgram(p.id)
     setuniform(p, :u_vp, fc.vp)
+    setuniform(p, :u_model, l.model)
     setuniform(p, :u_viewport, fc.viewport)
     setuniform(p, :u_width, l.width)
     glBindVertexArray(g.vao)

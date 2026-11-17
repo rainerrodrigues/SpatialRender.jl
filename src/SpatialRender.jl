@@ -38,8 +38,11 @@ import GLFW
 
 # ---- core (no GPU) --------------------------------------------------------
 include("core/types.jl")
+include("camera/quaternion.jl")
 include("core/frames.jl")
+include("core/pose.jl")
 include("core/scene.jl")
+include("core/streaming.jl")
 
 include("ingest/stl.jl")
 include("ingest/obj.jl")
@@ -56,7 +59,6 @@ include("index/pointindex.jl")
 include("index/frustum.jl")
 include("index/raycast.jl")
 
-include("camera/quaternion.jl")
 include("camera/camera.jl")
 include("camera/controller.jl")
 
@@ -73,7 +75,10 @@ export Vec3f, Vec3d, Vec2f, Vec4f, Mat4f, AABB
 export PointVertex, MeshVertex, LineVertex
 export PointCloud, TriMesh, LineLayer, Polyline, compute_normals!
 export Scene, add!, layers, bounds, ColorMode, COLOR_HEIGHT, COLOR_INTENSITY,
-       COLOR_CLASSIFICATION, COLOR_RGB
+       COLOR_CLASSIFICATION, COLOR_RGB, COLOR_AGE
+# poses and live data
+export set_pose!, pose, pose_matrix, touch!, world_bounds, with_update_lock,
+       StreamingPointCloud, push_scan!
 # frames
 export LocalFrame, ENUFrame, OffsetFrame, IdentityFrame, to_local, to_world,
        geodetic_to_ecef, ecef_to_enu, enu_to_ecef, ecef_to_geodetic
@@ -94,7 +99,7 @@ export Quat, Camera, OrbitMode, FlyMode, view_matrix, projection_matrix, view_pr
        look_at!, orbit!, pan!, dolly!, fly_move!, fly_look!, frame!, screen_ray,
        CameraController, InputState, set_pivot!
 # render
-export open_viewer, Viewer, step!, run!, pick!, Renderer, RenderSettings, render_frame!,
+export open_viewer, gl_info, Viewer, step!, run!, pick!, Renderer, RenderSettings, render_frame!,
        render_offscreen, screenshot, write_png, compile_cache_stats, validate_shaders,
        ShaderSource
 

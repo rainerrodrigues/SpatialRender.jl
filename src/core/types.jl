@@ -11,6 +11,7 @@ const Vec3d = SVector{3, Float64}
 const Mat3f = SMatrix{3, 3, Float32, 9}
 const Mat4f = SMatrix{4, 4, Float32, 16}
 const RGBA8 = NTuple{4, UInt8}
+const IDENTITY4 = Mat4f(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1)
 
 """
     AABB(lo, hi)
@@ -105,9 +106,13 @@ mutable struct PointCloud <: Layer
     color_mode::Int32
     visible::Bool
     gps_time::Vector{Float64}   # optional, empty when absent
+    model::Mat4f                # pose: layer → scene frame (see set_pose!)
+    rev::Int                    # content revision (see touch!)
 end
+PointCloud(name, vertices, point_size, color_mode, visible, gps_time) =
+    PointCloud(name, vertices, point_size, color_mode, visible, gps_time, IDENTITY4, 0)
 
-@enum ColorMode::Int32 COLOR_HEIGHT = 0 COLOR_INTENSITY = 1 COLOR_CLASSIFICATION = 2 COLOR_RGB = 3
+@enum ColorMode::Int32 COLOR_HEIGHT = 0 COLOR_INTENSITY = 1 COLOR_CLASSIFICATION = 2 COLOR_RGB = 3 COLOR_AGE = 4
 
 function PointCloud(vertices::Vector{PointVertex}; name="points", point_size=2.0,
                     color_mode=COLOR_HEIGHT, gps_time=Float64[])
@@ -161,9 +166,11 @@ mutable struct TriMesh <: Layer
     color::Vec4f
     wireframe::Bool
     visible::Bool
+    model::Mat4f
+    rev::Int
 end
 TriMesh(vertices, indices; name="mesh", color=Vec4f(0.72, 0.74, 0.78, 1), wireframe=false) =
-    TriMesh(String(name), vertices, indices, Vec4f(color), wireframe, true)
+    TriMesh(String(name), vertices, indices, Vec4f(color), wireframe, true, IDENTITY4, 0)
 
 ntriangles(m::TriMesh) = length(m.indices) ÷ 3
 bounds(m::TriMesh) = bounds_of(v.position for v in m.vertices)
@@ -209,9 +216,11 @@ mutable struct LineLayer <: Layer
     polylines::Vector{Polyline}
     width::Float32
     visible::Bool
+    model::Mat4f
+    rev::Int
 end
 LineLayer(polylines::Vector{Polyline}; name="lines", width=2.0) =
-    LineLayer(String(name), polylines, Float32(width), true)
+    LineLayer(String(name), polylines, Float32(width), true, IDENTITY4, 0)
 
 bounds(l::LineLayer) = reduce(union, (bounds_of(p.points) for p in l.polylines); init=AABB())
 

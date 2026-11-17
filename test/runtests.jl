@@ -351,6 +351,61 @@ end
     @test ctl.state == SpatialRender.LOOKING
 end
 
+@testset "poses" begin
+    using SpatialRender: transform_point, inverse_pose, transform_box, IDENTITY4
+    M = pose_matrix(Vec3d(10, 0, 2), Quat(Vec3d(0, 0, 1), π / 2); scale=2.0)
+    @test transform_point(M, Vec3f(1, 0, 0)) ≈ Vec3f(10, 2, 2) atol = 1e-5
+    @test inverse_pose(M) * M ≈ IDENTITY4 atol = 1e-5
+    m = TriMesh([MeshVertex(Vec3f(-1, -1, 0), Vec3f(0, 0, 1)), MeshVertex(Vec3f(1, -1, 0), Vec3f(0, 0, 1)),
+                 MeshVertex(Vec3f(0, 1, 0), Vec3f(0, 0, 1))], UInt32[0, 1, 2])
+    @test world_bounds(m) == bounds(m)
+    set_pose!(m, Vec3d(100, 50, 3))
+    @test world_bounds(m).lo ≈ Vec3f(99, 49, 3)
+    s = Scene(); add!(s, m)
+    @test bounds(s).hi ≈ Vec3f(101, 51, 3)
+    # picking a posed, scaled mesh: ray straight down onto it
+    set_pose!(m, Vec3d(100, 50, 3), Quat(); scale=3.0)
+    bvh = build_bvh(m)
+    hit = raycast([(m, bvh)], Ray(Vec3f(100, 50, 20), Vec3f(0, 0, -1)))
+    @test ishit(hit) && isapprox(hit.t, 17; atol=1e-4) && isapprox(hit.position, Vec3f(100, 50, 3); atol=1e-4)
+    @test !ishit(raycast([(m, bvh)], Ray(Vec3f(0, 0, 20), Vec3f(0, 0, -1))))
+    r0 = m.rev; touch!(m); @test m.rev == r0 + 1
+    @test_throws ArgumentError set_pose!(m, zeros(3, 3))
+end
+
+@testset "streaming point cloud" begin
+    sp = StreamingPointCloud(10)
+    @test length(sp) == 0 && isempty(bounds(sp))
+    push_scan!(sp, [Vec3f(i, 0, 0) for i in 1:4])
+    @test length(sp) == 4 && sp.dirty == [1:4] && sp.seq == 1
+    push_scan!(sp, [Vec3f(i, 0, 0) for i in 1:4]; pose=(Vec3d(0, 0, 5), Quat()))
+    @test sp.buffer[5].position == Vec3f(1, 0, 5) && sp.buffer[5].flags == 0x02
+    empty!(sp.dirty)
+    push_scan!(sp, [Vec3f(0, 0, -1) for _ in 1:4])          # wraps: 9,10 then 1,2
+    @test sp.dirty == [9:10, 1:2]
+    @test length(sp) == 10 && sp.written == 12
+    @test length(sp.scans) == 3                               # first scan only partly overwritten
+    push_scan!(sp, [Vec3f(0, 0, 9) for _ in 1:3])            # overwrites 3..5
+    @test length(sp.scans) == 3 && sp.scans[1].seq == 2      # scan 1 fully gone
+    @test bounds(sp).hi[3] == 9
+    big = [Vec3f(i, 0, 0) for i in 1:25]                     # larger than the ring
+    push_scan!(sp, big)
+    @test sp.buffer[mod1(sp.written, 10)].position == Vec3f(25, 0, 0) && length(sp.scans) == 1
+    # many tiny pushes coalesce into one dirty range
+    empty!(sp.dirty)
+    for _ in 1:100; push_scan!(sp, [Vec3f(0, 0, 0)]); end
+    @test length(sp.dirty) <= 65
+    # concurrent producers do not corrupt the ring
+    sp2 = StreamingPointCloud(100_000)
+    @sync for t in 1:4
+        Threads.@spawn for _ in 1:200
+            push_scan!(sp2, fill(Vec3f(t, 0, 0), 37))
+        end
+    end
+    @test sp2.written == 4 * 200 * 37 && sp2.seq == 800
+    @test all(v -> v.position[1] in 1:4, sp2.buffer[1:length(sp2)])
+end
+
 @testset "PNG writer" begin
     img = [(UInt8(x), UInt8(y), 0x80) for y in 1:3, x in 1:4]
     write_png(tmp("t.png"), img)
@@ -401,6 +456,36 @@ end
         @test compile_cache_stats().misses == before.misses + 3     # new context → recompiled
         screenshot(tmp("s.png"), scene; width=128, height=96)
         @test filesize(tmp("s.png")) > 128 * 96 * 3
+
+        # poses, streams and re-upload after touch!
+        s2 = Scene()
+        tri = TriMesh([MeshVertex(Vec3f(-1, -1, 0), Vec3f(0, 0, 1)), MeshVertex(Vec3f(1, -1, 0), Vec3f(0, 0, 1)),
+                       MeshVertex(Vec3f(0, 1, 0), Vec3f(0, 0, 1))], UInt32[0, 1, 2]; color=Vec4f(1, 0, 0, 1))
+        add!(s2, tri)
+        live = add!(s2, StreamingPointCloud(1000; point_size=6))
+        push_scan!(live, [Vec3f(x, y, 0.5) for x in 2.5:0.1:3.5, y in -1:0.1:1][:])   # beside the triangle
+        cam = Camera(position=Vec3d(0, -0.01, 10), target=Vec3d(0, 0, 0), aspect=1.0)
+        reddish(img) = count(p -> p[1] > 150 && p[2] < 80 && p[3] < 80, img)
+        nogrid = RenderSettings(grid=false)
+        a = render_offscreen(s2; width=100, height=100, camera=deepcopy(cam), settings=nogrid)
+        set_pose!(tri, Vec3d(50, 0, 0))                       # moved out of view
+        b = render_offscreen(s2; width=100, height=100, camera=deepcopy(cam), settings=nogrid)
+        @test reddish(a) > 50 && reddish(b) < reddish(a) ÷ 4
+        SpatialRender.with_hidden_context() do
+            r = Renderer(s2)
+            render_frame!(r, deepcopy(cam), 64, 64)
+            @test r.stats.points == length(live) && r.stats.triangles == 0
+            g = r.gpu[tri]
+            render_frame!(r, deepcopy(cam), 64, 64)
+            @test r.gpu[tri] === g                                # unchanged: not re-uploaded
+            touch!(tri)
+            render_frame!(r, deepcopy(cam), 64, 64)
+            @test r.gpu[tri] !== g                                # edited: re-uploaded
+            push_scan!(live, [Vec3f(0, 0, 1)])
+            render_frame!(r, deepcopy(cam), 64, 64)
+            @test isempty(live.dirty) && r.stats.points == length(live)
+            SpatialRender.release!(r)
+        end
     end
 end
 

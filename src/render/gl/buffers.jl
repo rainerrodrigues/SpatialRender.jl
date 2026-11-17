@@ -57,6 +57,8 @@ function point_layout!()
     _float_attr(2, 4, T, :rgba; type=GL_UNSIGNED_BYTE, normalized=GL_TRUE)
     glEnableVertexAttribArray(3)
     glVertexAttribIPointer(3, 1, GL_UNSIGNED_BYTE, sizeof(T), _off(T, :classification))
+    glEnableVertexAttribArray(4)
+    glVertexAttribIPointer(4, 1, GL_UNSIGNED_BYTE, sizeof(T), _off(T, :flags))
 end
 
 "Attribute layout of [`MeshVertex`](@ref) (locations 0–2)."
@@ -96,6 +98,11 @@ mutable struct GPUMesh <: GPULayer
     box::AABB
 end
 
+mutable struct GPUStream <: GPULayer
+    vao::GLuint
+    vbo::GLBuffer
+end
+
 mutable struct GPULines <: GPULayer
     vao::GLuint
     instances::GLBuffer
@@ -113,6 +120,33 @@ function upload(pc::PointCloud; chunk_size=8192)
     glBindVertexArray(0)
     b = ix.bounds
     return GPUPoints(vao, vbo, ix, isempty(b) ? Vec2f(0, 1) : Vec2f(b.lo[3], b.hi[3]))
+end
+
+function upload(sp::StreamingPointCloud)
+    vao = new_vao()
+    id = Ref{GLuint}(0)
+    glGenBuffers(1, id)
+    glBindBuffer(GL_ARRAY_BUFFER, id[])
+    bytes = sizeof(PointVertex) * capacity(sp)
+    glBufferData(GL_ARRAY_BUFFER, bytes, C_NULL, GL_STREAM_DRAW)   # allocate once
+    point_layout!()
+    glBindVertexArray(0)
+    g = GPUStream(vao, GLBuffer(id[], GL_ARRAY_BUFFER, bytes))
+    sp.dirty = [1:length(sp)]                                       # first upload: everything live
+    return g
+end
+
+"Copy the stream's dirty ranges into its GPU buffer (caller holds UPDATE_LOCK)."
+function sync_stream!(g::GPUStream, sp::StreamingPointCloud)
+    isempty(sp.dirty) && return
+    glBindBuffer(GL_ARRAY_BUFFER, g.vbo.id)
+    T = sizeof(PointVertex)
+    buf = sp.buffer
+    GC.@preserve buf for r in sp.dirty
+        isempty(r) && continue
+        glBufferSubData(GL_ARRAY_BUFFER, (first(r) - 1) * T, length(r) * T, pointer(buf, first(r)))
+    end
+    empty!(sp.dirty)
 end
 
 function upload(m::TriMesh)

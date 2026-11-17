@@ -1,0 +1,37 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Julia ${{ matrix.julia }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        julia: ["1.10", "1"]
+        os: [ubuntu-latest]
+    env:
+      JULIA_NUM_THREADS: 2
+      # Mesa's software rasteriser: the GPU tests (shader compile, offscreen
+      # render) run for real under Xvfb without a GPU.
+      LIBGL_ALWAYS_SOFTWARE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: OpenGL / X dependencies
+        run: sudo apt-get update && sudo apt-get install -y xvfb libgl1-mesa-dri libglx-mesa0 glslang-tools
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: ${{ matrix.julia }}
+      - uses: julia-actions/cache@v2
+      - uses: julia-actions/julia-buildpkg@v1
+      - uses: julia-actions/julia-runtest@v1
+        with:
+          prefix: xvfb-run -a -s "-screen 0 1280x1024x24"

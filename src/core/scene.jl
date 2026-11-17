@@ -21,19 +21,24 @@ layers(s::Scene, ::Type{T}) where {T <: Layer} = (l for l in s.layers if l isa T
 Add a layer to the scene. Returns the layer so it can be tweaked afterwards.
 """
 function add!(s::Scene, l::Layer)
-    push!(s.layers, l)
-    s.version += 1
+    lock(UPDATE_LOCK) do
+        push!(s.layers, l)
+        s.version += 1
+    end
     return l
 end
 add!(s::Scene, ls::Layer...) = (foreach(l -> add!(s, l), ls); s)
 
 function Base.delete!(s::Scene, l::Layer)
-    filter!(x -> x !== l, s.layers)
-    s.version += 1
+    lock(UPDATE_LOCK) do
+        filter!(x -> x !== l, s.layers)
+        s.version += 1
+    end
     return s
 end
 
-bounds(s::Scene) = reduce(union, (bounds(l) for l in s.layers if l.visible); init=AABB())
+"Bounds of all visible layers in the scene frame (poses applied)."
+bounds(s::Scene) = reduce(union, (world_bounds(l) for l in s.layers if l.visible); init=AABB())
 
 function Base.show(io::IO, ::MIME"text/plain", s::Scene)
     println(io, "Scene with ", length(s.layers), " layer", length(s.layers) == 1 ? "" : "s",
