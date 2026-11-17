@@ -83,7 +83,7 @@ SpatialRender controls
   F  frame all    T  top view    O  ortho / perspective
   1 height  2 intensity  3 classification  4 RGB  5 scan age   (point colors)
   + / -  point size    P  pixel / world point size    L  LOD on/off
-  M  mesh wireframe    G  grid    H  help    S-shot: F12    Esc  close
+  M  mesh wireframe    G  grid    B  eye-dome lighting    H  help    S-shot: F12    Esc  close
 """
 
 """
@@ -182,6 +182,8 @@ function _on_key(v::Viewer, key, action)
         end
     elseif key == GLFW.KEY_G
         s.grid = !s.grid
+    elseif key == GLFW.KEY_B
+        s.edl = !s.edl
     elseif key == GLFW.KEY_H
         print(HELP)
     elseif key == GLFW.KEY_F12

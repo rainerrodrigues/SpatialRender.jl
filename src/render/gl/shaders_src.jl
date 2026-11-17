@@ -209,3 +209,50 @@ const CLASS_COLORS = let c = fill(Vec4f(0.8, 0.8, 0.8, 1), 32)
     end
     c
 end
+
+# Eye-dome lighting (Boucheny 2009, as in CloudCompare / Potree): a
+# screen-space pass that shades each pixel by how much nearer its neighbours
+# are in log depth. Gives unlit point clouds readable shape and silhouettes.
+const EDL_SHADER = ShaderSource(:edl, GLSL_HEADER * """
+void main() {
+    // one triangle covering the screen, no vertex buffer needed
+    vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}
+""", GLSL_HEADER * """
+uniform sampler2D u_color;
+uniform sampler2D u_depth;
+uniform vec2 u_near_far;
+uniform int u_ortho;
+uniform float u_strength;
+uniform float u_radius;
+out vec4 frag;
+
+float log_depth(float d) {
+    float n = u_near_far.x, f = u_near_far.y;
+    float z = u_ortho == 1 ? n + d * (f - n) : n * f / (f - d * (f - n));
+    return log2(max(z, 1e-6));
+}
+
+void main() {
+    ivec2 p = ivec2(gl_FragCoord.xy);
+    float d = texelFetch(u_depth, p, 0).r;
+    vec4 c = texelFetch(u_color, p, 0);
+    if (d >= 1.0) { frag = c; gl_FragDepth = 1.0; return; }   // background untouched
+    float L = log_depth(d);
+    float sum = 0.0;
+    ivec2 size = textureSize(u_depth, 0);
+    for (int i = 0; i < 8; i++) {
+        float a = 0.78539816 * float(i);
+        ivec2 q = clamp(p + ivec2(round(u_radius * vec2(cos(a), sin(a)))), ivec2(0), size - 1);
+        float dn = texelFetch(u_depth, q, 0).r;
+        // a background neighbour (silhouette) counts as much nearer
+        sum += dn >= 1.0 ? 0.004 : max(0.0, L - log_depth(dn));
+    }
+    float shade = exp(-sum / 8.0 * 300.0 * u_strength);
+    frag = vec4(c.rgb * shade, c.a);
+    gl_FragDepth = d;
+}
+""")
+
+const ALL_SHADERS = (BUILTIN_SHADERS..., EDL_SHADER)

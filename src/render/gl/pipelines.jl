@@ -12,6 +12,8 @@
   `Inf` disables level of detail.
 - `wireframe_color`: overlay color for meshes with `wireframe = true`.
 - `grid`: draw a ground grid at z = 0.
+- `edl`, `edl_strength`, `edl_radius`: eye-dome lighting on points and
+  meshes (screen-space depth shading; radius in pixels).
 """
 Base.@kwdef mutable struct RenderSettings
     background::Vec4f = Vec4f(0.08, 0.09, 0.11, 1)
@@ -21,6 +23,9 @@ Base.@kwdef mutable struct RenderSettings
     lod_density::Float64 = 1.5
     wireframe_color::Vec4f = Vec4f(0.05, 0.05, 0.08, 0.6)
     grid::Bool = true
+    edl::Bool = true
+    edl_strength::Float32 = 1.0f0
+    edl_radius::Float32 = 1.4f0
     highlight::Tuple{Any, Int} = (nothing, 0)   # (layer, 1-based point index)
 end
 

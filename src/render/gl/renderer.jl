@@ -20,13 +20,64 @@ mutable struct Renderer
     stats::NamedTuple{(:points, :triangles, :segments), NTuple{3, Int}}
     box::AABB                 # scene bounds in the scene frame, updated per frame
     revs::IdDict{Layer, Int}  # content revision each GPU object was built from
+    edl_program::GLProgram
+    edl::Any                  # Nothing or EDLTarget, created at first use
+end
+
+"Offscreen color + depth textures the opaque passes render into for EDL."
+mutable struct EDLTarget
+    fbo::GLuint
+    color::GLuint
+    depth::GLuint
+    vao::GLuint
+    w::Int
+    h::Int
+end
+
+function _tex(internal, format, type, w, h)
+    id = Ref{GLuint}(0)
+    glGenTextures(1, id)
+    glBindTexture(GL_TEXTURE_2D, id[])
+    glTexImage2D(GL_TEXTURE_2D, 0, internal, w, h, 0, format, type, C_NULL)
+    for (k, v) in ((GL_TEXTURE_MIN_FILTER, GL_NEAREST), (GL_TEXTURE_MAG_FILTER, GL_NEAREST),
+                   (GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE), (GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE))
+        glTexParameteri(GL_TEXTURE_2D, k, v)
+    end
+    return id[]
+end
+
+function EDLTarget(w, h)
+    fbo = Ref{GLuint}(0)
+    glGenFramebuffers(1, fbo)
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo[])
+    c = _tex(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, w, h)
+    d = _tex(GL_DEPTH_COMPONENT24, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, w, h)
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, c, 0)
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, d, 0)
+    glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE || error("EDL framebuffer incomplete")
+    vao = Ref{GLuint}(0); glGenVertexArrays(1, vao)
+    return EDLTarget(fbo[], c, d, vao[], w, h)
+end
+
+function release!(t::EDLTarget)
+    glDeleteFramebuffers(1, Ref(t.fbo))
+    glDeleteTextures(2, GLuint[t.color, t.depth])
+    glDeleteVertexArrays(1, Ref(t.vao))
+end
+
+function _edl_target!(r, w, h)
+    t = r.edl
+    t isa EDLTarget && t.w == w && t.h == h && return t
+    t isa EDLTarget && release!(t)
+    r.edl = EDLTarget(w, h)
 end
 
 function Renderer(scene::Scene; settings::RenderSettings=RenderSettings())
     r = Renderer(scene, settings, GLProgram(POINT_SHADER), GLProgram(MESH_SHADER),
                  GLProgram(LINE_SHADER), IdDict{Layer, GPULayer}(),
                  GLBuffer(GL_ARRAY_BUFFER, QUAD_CORNERS), -1, nothing,
-                 (points=0, triangles=0, segments=0), AABB(), IdDict{Layer, Int}())
+                 (points=0, triangles=0, segments=0), AABB(), IdDict{Layer, Int}(),
+                 GLProgram(EDL_SHADER), nothing)
     glUseProgram(r.points.id)
     setuniform(r.points, :u_class_colors, CLASS_COLORS)
     sync!(r)
@@ -103,9 +154,12 @@ function _render_frame!(r::Renderer, cam::Camera, w::Integer, h::Integer)
     vp = view_projection(cam)
     fc = FrameContext(vp, frustum_from_matrix(vp), Vec3f(cam.position), Vec2f(w, h),
                       Float32(h / (2tan(cam.fov / 2))), Float32(pixels_per_radian(cam, h)))
+    target = Ref{GLint}(0)
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, target)     # window or caller's FBO
     glViewport(0, 0, w, h)
     bg = s.background
     glClearColor(bg[1], bg[2], bg[3], bg[4])
+    s.edl && glBindFramebuffer(GL_FRAMEBUFFER, _edl_target!(r, w, h).fbo)
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
     glEnable(GL_DEPTH_TEST); glDepthFunc(GL_LESS)
     glEnable(GL_PROGRAM_POINT_SIZE)
@@ -118,6 +172,11 @@ function _render_frame!(r::Renderer, cam::Camera, w::Integer, h::Integer)
     for l in r.scene.layers                      # pass 2: points
         (l isa PointCloud || l isa StreamingPointCloud) && l.visible &&
             (np += draw!(r.gpu[l], l, r.points, fc, s))
+    end
+    if s.edl                                     # composite with eye-dome lighting
+        glBindFramebuffer(GL_FRAMEBUFFER, target[])
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+        _edl_pass!(r, cam)
     end
     glEnable(GL_BLEND)                           # pass 3: anti-aliased lines
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
@@ -133,9 +192,28 @@ function _render_frame!(r::Renderer, cam::Camera, w::Integer, h::Integer)
     return r.stats
 end
 
+function _edl_pass!(r::Renderer, cam::Camera)
+    t = r.edl; p = r.edl_program; s = r.settings
+    glUseProgram(p.id)
+    glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, t.color)
+    glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, t.depth)
+    setuniform(p, :u_color, 0)
+    setuniform(p, :u_depth, 1)
+    setuniform(p, :u_near_far, Vec2f(cam.near, cam.far))
+    setuniform(p, :u_ortho, cam.ortho ? 1 : 0)
+    setuniform(p, :u_strength, s.edl_strength)
+    setuniform(p, :u_radius, s.edl_radius)
+    glDepthFunc(GL_ALWAYS)                       # copy depth so lines still occlude
+    glBindVertexArray(t.vao)
+    glDrawArrays(GL_TRIANGLES, 0, 3)
+    glDepthFunc(GL_LESS)
+    glActiveTexture(GL_TEXTURE0)
+end
+
 _grid_box(r::Renderer) = r.grid === nothing || !r.settings.grid ? AABB() : r.grid[2].box
 
 function release!(r::Renderer)
+    r.edl isa EDLTarget && (release!(r.edl); r.edl = nothing)
     foreach(release!, values(r.gpu)); empty!(r.gpu)
     r.grid === nothing || release!(r.grid[2])
     release!(r.corners)

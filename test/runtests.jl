@@ -428,7 +428,7 @@ end
         @test_skip false
     else
         res = validate_shaders(backend=:gl)
-        @test length(res) == 6
+        @test length(res) == 2 * length(SpatialRender.ALL_SHADERS)
         for r in res
             r.ok || @error "shader $(r.name) $(r.stage)" r.log
             @test r.ok
@@ -453,7 +453,7 @@ end
         @test nonbg > 0.05 * length(img)
         before = compile_cache_stats()
         render_offscreen(scene; width=64, height=64)
-        @test compile_cache_stats().misses == before.misses + 3     # new context → recompiled
+        @test compile_cache_stats().misses == before.misses + length(SpatialRender.ALL_SHADERS)   # new context → recompiled
         screenshot(tmp("s.png"), scene; width=128, height=96)
         @test filesize(tmp("s.png")) > 128 * 96 * 3
 

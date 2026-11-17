@@ -129,7 +129,7 @@ hidden GLFW window with the real driver, `:auto` prefers glslang. Returns
 one `(name, stage, ok, log)` record per stage; never throws on a shader
 error, so it suits CI reports.
 """
-function validate_shaders(sources=BUILTIN_SHADERS; backend::Symbol=:auto)
+function validate_shaders(sources=ALL_SHADERS; backend::Symbol=:auto)
     tool = Sys.which("glslangValidator")
     if backend == :glslang || (backend == :auto && tool !== nothing)
         tool === nothing && error("glslangValidator not found on PATH")

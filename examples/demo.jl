@@ -82,5 +82,6 @@ if isempty(ARGS)
 else
     cam = Camera(position=Vec3d(-75, -85, 60), target=Vec3d(0, 0, 0))
     screenshot(ARGS[1], scene; width=1280, height=720, camera=cam)
+    length(ARGS) > 1 && screenshot(ARGS[2], scene; width=1280, height=720, camera=cam, settings=RenderSettings(edl=false))
     @info "wrote $(ARGS[1])"
 end
