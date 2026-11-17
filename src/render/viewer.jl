@@ -67,6 +67,9 @@ mutable struct Viewer
     context::UInt
     last_hit::RayHit
     open::Bool
+    measuring::Bool                         # measure mode (R)
+    pending::Union{Nothing, Vec3f}          # first point of a measurement in progress
+    annotations::Union{Nothing, Annotations}
 end
 
 const KEYMAP = Dict(GLFW.KEY_W => :w, GLFW.KEY_A => :a, GLFW.KEY_S => :s, GLFW.KEY_D => :d,
@@ -83,7 +86,8 @@ SpatialRender controls
   F  frame all    T  top view    O  ortho / perspective
   1 height  2 intensity  3 classification  4 RGB  5 scan age   (point colors)
   + / -  point size    P  pixel / world point size    L  LOD on/off
-  M  mesh wireframe    G  grid    B  eye-dome lighting    H  help    S-shot: F12    Esc  close
+  M  mesh wireframe    G  grid    B  eye-dome lighting    H  help
+  R  measure mode: click two points for distance, Δz and slope; Backspace undoes    S-shot: F12    Esc  close
 """
 
 """
@@ -110,7 +114,7 @@ function open_viewer(scene::Scene; width::Integer=1280, height::Integer=800,
     ctl = CameraController(cam)
     fw, fh = GLFW.GetFramebufferSize(win)
     set_viewport!(ctl, fw, fh)
-    v = Viewer(win, r, ctl, ctx, NO_HIT, true)
+    v = Viewer(win, r, ctl, ctx, NO_HIT, true, false, nothing, nothing)
     _install_callbacks!(v)
     block || return v
     run!(v)
@@ -130,7 +134,12 @@ function _install_callbacks!(v::Viewer)
         b = button == GLFW.MOUSE_BUTTON_LEFT ? :left : button == GLFW.MOUSE_BUTTON_RIGHT ? :right : :middle
         shift = (Int(mods) & Int(GLFW.MOD_SHIFT)) != 0
         ev = mouse_button!(ctl, b, action == GLFW.PRESS; shift, time=time())
-        ev == :double_click && pick!(v, ctl.input.cursor[1], ctl.input.cursor[2]; set_pivot=true)
+        x, y = ctl.input.cursor
+        if ev == :double_click
+            pick!(v, x, y; set_pivot=true)
+        elseif ev == :click && v.measuring
+            measure_click!(v, x, y)
+        end
     end)
     GLFW.SetKeyCallback(win, (_, key, scancode, action, mods) -> _on_key(v, key, action))
 end
@@ -184,6 +193,13 @@ function _on_key(v::Viewer, key, action)
         s.grid = !s.grid
     elseif key == GLFW.KEY_B
         s.edl = !s.edl
+    elseif key == GLFW.KEY_R
+        v.measuring = !v.measuring
+        v.measuring || _cancel_pending!(v)
+        @info v.measuring ? "measure mode: click two points (Backspace undoes, R exits)" : "measure mode off"
+    elseif key == GLFW.KEY_BACKSPACE && v.annotations !== nothing
+        v.pending === nothing || (v.pending = nothing)
+        undo!(v.annotations)
     elseif key == GLFW.KEY_H
         print(HELP)
     elseif key == GLFW.KEY_F12
@@ -217,6 +233,39 @@ function pick!(v::Viewer, x::Real, y::Real; set_pivot::Bool=false)
     v.renderer.settings.highlight = hit.layer isa PointCloud ? (hit.layer, hit.index) : (nothing, 0)
     set_pivot && set_pivot!(ctl, p)
     return hit
+end
+
+"The viewer's annotation layer, created on first use."
+function annotations!(v::Viewer)
+    if v.annotations === nothing
+        v.annotations = add!(v.renderer.scene, Annotations(name="measurements"))
+    end
+    return v.annotations
+end
+
+_cancel_pending!(v::Viewer) = v.pending === nothing || (v.pending = nothing; undo!(annotations!(v)))
+
+"""
+    measure_click!(viewer, x, y) -> Union{Nothing, Tuple}
+
+Measure-mode click at framebuffer pixel `(x, y)`: the first click marks a
+point, the second adds the measurement and returns `(distance, dz, slope)`.
+"""
+function measure_click!(v::Viewer, x::Real, y::Real)
+    hit = pick!(v, x, y)
+    ishit(hit) || return nothing
+    a = annotations!(v)
+    if v.pending === nothing
+        v.pending = hit.position
+        annotate!(a, hit.position, ""; color=Vec4f(1, 0.85, 0.2, 1))   # provisional marker
+        return nothing
+    end
+    p = v.pending
+    v.pending = nothing
+    undo!(a)                                                          # replace the marker
+    res = measure!(a, p, hit.position)
+    @info @sprintf("distance %.3f m   Δz %+.3f m   slope %.1f°", res...)
+    return res
 end
 
 """

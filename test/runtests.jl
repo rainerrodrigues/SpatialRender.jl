@@ -406,6 +406,40 @@ end
     @test all(v -> v.position[1] in 1:4, sp2.buffer[1:length(sp2)])
 end
 
+@testset "font and annotations" begin
+    using SpatialRender: text_segments, text_extent, GLYPHS, label_segments
+    # every glyph stays inside its cell (descenders and brackets may dip to -1)
+    for (c, strokes) in GLYPHS, st in strokes, (x, y) in st
+        @test 0 <= x <= 4 && -1 <= y <= 6.5
+    end
+    @test isempty(text_segments(" "))
+    @test text_segments("a") == [(SpatialRender.SMALL_CAPS * p, SpatialRender.SMALL_CAPS * q)
+                                 for (p, q) in text_segments("A")]
+    @test text_segments("§") == text_segments("?")             # unknown → ?
+    two = text_segments("1\n1")
+    @test minimum(min(p[2], q[2]) for (p, q) in two) < -SpatialRender.GLYPH_LINE + 0.1
+    @test text_extent("ab\ncde") == Vec2f(18, 6 + SpatialRender.GLYPH_LINE)
+
+    a = Annotations()
+    d, dz, slope = measure!(a, Vec3f(0, 0, 0), Vec3f(3, 4, 0))
+    @test d ≈ 5 && dz == 0 && slope == 0
+    d, dz, slope = measure!(a, Vec3f(0, 0, 0), Vec3f(1, 0, 1))
+    @test d ≈ sqrt(2) && dz ≈ 1 && slope ≈ 45
+    @test occursin("1.414 m", a.labels[end].text) && occursin("45.0°", a.labels[end].text)
+    annotate!(a, Vec3f(1, 2, 3), "hello")
+    @test length(a.lines) == 2 && length(a.labels) == 7
+    @test bounds(a).hi == Vec3f(3, 4, 3)
+    r0 = a.rev
+    undo!(a)
+    @test length(a.labels) == 6 && a.rev > r0
+    undo!(a); undo!(a); undo!(a)                                 # extra undo is a no-op
+    @test isempty(a.lines) && isempty(a.labels)
+    annotate!(a, Vec3f(0, 0, 0), "X"; marker=true)
+    segs = label_segments(a)
+    @test count(s -> s.width > 0, segs) == 1                     # one backing plate
+    @test length(segs) == 2 + 1 + 2                              # marker ×, plate, X strokes
+end
+
 @testset "PNG writer" begin
     img = [(UInt8(x), UInt8(y), 0x80) for y in 1:3, x in 1:4]
     write_png(tmp("t.png"), img)
@@ -486,6 +520,20 @@ end
             @test isempty(live.dirty) && r.stats.points == length(live)
             SpatialRender.release!(r)
         end
+
+        # eye-dome lighting darkens depth edges; labels draw on top of everything
+        s3 = Scene()
+        add!(s3, PointCloud([Vec3f(x, y, (abs(x) < 0.5 && abs(y) < 0.5) ? 1 : 0)
+                             for x in -2:0.02:2 for y in -2:0.02:2]; color_mode=COLOR_INTENSITY))
+        cam3 = Camera(position=Vec3d(0, -0.01, 8), target=Vec3d(0, 0, 0), aspect=1.0)
+        lum(img) = sum(sum(Int.(p)) for p in img)
+        on = render_offscreen(s3; width=96, height=96, camera=deepcopy(cam3), settings=RenderSettings(grid=false))
+        off = render_offscreen(s3; width=96, height=96, camera=deepcopy(cam3), settings=RenderSettings(grid=false, edl=false))
+        @test lum(on) < lum(off)                                  # edges shaded
+        notes = add!(s3, Annotations())
+        annotate!(notes, Vec3f(-1.5, -1.5, 0), "HELLO"; color=Vec4f(1, 0, 0, 1), size=14)
+        lab = render_offscreen(s3; width=96, height=96, camera=deepcopy(cam3), settings=RenderSettings(grid=false))
+        @test count(p -> p[1] > 180 && p[2] < 90, lab) > 20       # red text visible over the points
     end
 end
 

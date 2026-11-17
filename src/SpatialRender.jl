@@ -43,6 +43,7 @@ include("core/frames.jl")
 include("core/pose.jl")
 include("core/scene.jl")
 include("core/streaming.jl")
+include("core/annotations.jl")
 
 include("ingest/stl.jl")
 include("ingest/obj.jl")
@@ -63,6 +64,7 @@ include("camera/camera.jl")
 include("camera/controller.jl")
 
 # ---- OpenGL backend ------------------------------------------------------
+include("render/font.jl")
 include("render/gl/shaders_src.jl")
 include("render/gl/program.jl")
 include("render/gl/buffers.jl")
@@ -79,6 +81,8 @@ export Scene, add!, layers, bounds, ColorMode, COLOR_HEIGHT, COLOR_INTENSITY,
 # poses and live data
 export set_pose!, pose, pose_matrix, touch!, world_bounds, with_update_lock,
        StreamingPointCloud, push_scan!
+# annotations
+export Label, Annotations, annotate!, measure!, undo!
 # frames
 export LocalFrame, ENUFrame, OffsetFrame, IdentityFrame, to_local, to_world,
        geodetic_to_ecef, ecef_to_enu, enu_to_ecef, ecef_to_geodetic
@@ -99,7 +103,7 @@ export Quat, Camera, OrbitMode, FlyMode, view_matrix, projection_matrix, view_pr
        look_at!, orbit!, pan!, dolly!, fly_move!, fly_look!, frame!, screen_ray,
        CameraController, InputState, set_pivot!
 # render
-export open_viewer, gl_info, Viewer, step!, run!, pick!, Renderer, RenderSettings, render_frame!,
+export open_viewer, gl_info, Viewer, step!, run!, pick!, measure_click!, Renderer, RenderSettings, render_frame!,
        render_offscreen, screenshot, write_png, compile_cache_stats, validate_shaders,
        ShaderSource
 

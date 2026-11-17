@@ -255,4 +255,48 @@ void main() {
 }
 """)
 
-const ALL_SHADERS = (BUILTIN_SHADERS..., EDL_SHADER)
+
+# Screen-space text / markers: segments given in pixels relative to a 3-D
+# anchor, expanded into anti-aliased ribbons like LINE_SHADER.
+const LABEL_SHADER = ShaderSource(:labels, GLSL_HEADER * """
+layout(location = 0) in vec3 a_anchor;   // per instance
+layout(location = 1) in vec2 a_a;        // per instance: pixels from the anchor
+layout(location = 2) in vec2 a_b;
+layout(location = 3) in vec4 a_color;
+layout(location = 4) in vec2 a_corner;   // per vertex: (t, side)
+layout(location = 5) in float a_width;   // per instance: > 0 overrides u_width (plates)
+
+uniform mat4 u_vp;
+uniform mat4 u_model;
+uniform vec2 u_viewport;
+uniform float u_width;
+uniform int u_halo;                      // 1: draw a dark outline pass
+uniform vec4 u_halo_color;
+
+out vec4 v_color;
+out float v_dist;
+out float v_half;
+
+void main() {
+    vec4 c = u_vp * (u_model * vec4(a_anchor, 1.0));
+    if (c.w <= 1e-5) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }   // behind the camera
+    vec2 half_vp = 0.5 * u_viewport;
+    vec2 d = a_b - a_a;
+    float len = length(d);
+    vec2 dir = len > 1e-6 ? d / len : vec2(1.0, 0.0);
+    vec2 nrm = vec2(-dir.y, dir.x);
+    float t = a_corner.x, side = a_corner.y;
+    bool plate = a_width > 0.0;
+    float w = plate ? a_width : u_width;
+    v_half = 0.5 * w + 1.0;
+    // plates: square ends, and invisible in the halo pass
+    vec2 px = (t < 0.5 ? a_a : a_b) + nrm * side * v_half + dir * (t < 0.5 ? -1.0 : 1.0) * (plate ? 4.0 : 0.5 * w);
+    // snap the anchor to the pixel grid so text does not shimmer while moving
+    vec2 anchor_px = floor((c.xy / c.w) * half_vp + 0.5);
+    gl_Position = vec4((anchor_px + px) / half_vp, -1.0, 1.0);
+    v_dist = side * v_half;
+    v_color = u_halo == 1 ? (plate ? vec4(0.0) : u_halo_color) : a_color;
+}
+""", LINE_SHADER.fragment)
+
+const ALL_SHADERS = (BUILTIN_SHADERS..., EDL_SHADER, LABEL_SHADER)

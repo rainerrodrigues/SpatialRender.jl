@@ -13,8 +13,9 @@ mutable struct InputState
     last_cursor::Vec2f
     scroll::Float64             # accumulated since last update
     last_click_time::Float64
+    press_cursor::Vec2f         # where the left button went down (click detection)
 end
-InputState() = InputState(Set{Symbol}(), (false, false, false), Vec2f(0, 0), Vec2f(0, 0), 0.0, -Inf)
+InputState() = InputState(Set{Symbol}(), (false, false, false), Vec2f(0, 0), Vec2f(0, 0), 0.0, -Inf, Vec2f(0, 0))
 
 """
     CameraController(camera; mode=OrbitMode)
@@ -63,7 +64,8 @@ end
 
 `button` is `:left`, `:right` or `:middle`. Returns `:double_click` on a
 second left press within 0.3 s (the viewer then picks a new pivot),
-otherwise `:none`.
+`:click` when the left button is released less than 4 pixels from where
+it was pressed (a click rather than a drag), otherwise `:none`.
 """
 function mouse_button!(ctl::CameraController, button::Symbol, pressed::Bool; shift::Bool=false, time::Real=0.0)
     inp = ctl.input
@@ -79,11 +81,13 @@ function mouse_button!(ctl::CameraController, button::Symbol, pressed::Bool; shi
             ctl.state = ctl.mode == OrbitMode ? ORBITING : LOOKING
             time - inp.last_click_time < 0.3 && (ev = :double_click)
             inp.last_click_time = time
+            inp.press_cursor = inp.cursor
         else
             ctl.state = PANNING
         end
-    elseif !(l || r || m)
-        ctl.state = IDLE
+    else
+        button == :left && norm(inp.cursor - inp.press_cursor) < 4 && (ev = :click)
+        (l || r || m) || (ctl.state = IDLE)
     end
     return ev
 end

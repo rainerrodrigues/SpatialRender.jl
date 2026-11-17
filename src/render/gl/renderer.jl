@@ -22,6 +22,7 @@ mutable struct Renderer
     revs::IdDict{Layer, Int}  # content revision each GPU object was built from
     edl_program::GLProgram
     edl::Any                  # Nothing or EDLTarget, created at first use
+    labels::GLProgram
 end
 
 "Offscreen color + depth textures the opaque passes render into for EDL."
@@ -77,7 +78,7 @@ function Renderer(scene::Scene; settings::RenderSettings=RenderSettings())
                  GLProgram(LINE_SHADER), IdDict{Layer, GPULayer}(),
                  GLBuffer(GL_ARRAY_BUFFER, QUAD_CORNERS), -1, nothing,
                  (points=0, triangles=0, segments=0), AABB(), IdDict{Layer, Int}(),
-                 GLProgram(EDL_SHADER), nothing)
+                 GLProgram(EDL_SHADER), nothing, GLProgram(LABEL_SHADER))
     glUseProgram(r.points.id)
     setuniform(r.points, :u_class_colors, CLASS_COLORS)
     sync!(r)
@@ -99,7 +100,7 @@ function sync!(r::Renderer)
             r.revs[l] == l.rev && continue
             release!(g)                                   # contents changed
         end
-        r.gpu[l] = l isa LineLayer ? upload(l, r.corners) : upload(l)
+        r.gpu[l] = l isa LineLayer || l isa Annotations ? upload(l, r.corners) : upload(l)
         r.revs[l] = l.rev
         structural = true
     end
@@ -123,6 +124,7 @@ local_box(g::GPUPoints, l) = g.index.bounds
 local_box(g::GPUMesh, l) = g.box
 local_box(g::GPULines, l) = g.box
 local_box(g::GPUStream, l) = bounds(l)
+local_box(g::GPUAnnotations, l) = bounds(l)
 
 "Scene bounds with current poses (cheap: one box per layer)."
 world_box(r::Renderer) = reduce(union, (transform_box(l.model, local_box(r.gpu[l], l))
@@ -186,10 +188,39 @@ function _render_frame!(r::Renderer, cam::Camera, w::Integer, h::Integer)
     for l in r.scene.layers
         l isa LineLayer && l.visible && (ns += draw!(r.gpu[l], l, r.lines, fc, s))
     end
+    glDisable(GL_DEPTH_TEST)                     # pass 4: annotations, always on top
+    for l in r.scene.layers
+        l isa Annotations && l.visible && _draw_annotations!(r, r.gpu[l], l, fc)
+    end
+    glEnable(GL_DEPTH_TEST)
     glDisable(GL_BLEND)
     glBindVertexArray(0)
     r.stats = (points=np, triangles=nt, segments=ns)
     return r.stats
+end
+
+function _draw_annotations!(r::Renderer, g::GPUAnnotations, a::Annotations, fc::FrameContext)
+    s = r.settings
+    if g.lines.count > 0
+        p = r.lines
+        glUseProgram(p.id)
+        setuniform(p, :u_vp, fc.vp); setuniform(p, :u_model, a.model)
+        setuniform(p, :u_viewport, fc.viewport); setuniform(p, :u_width, a.width)
+        glBindVertexArray(g.lines.vao)
+        glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, g.lines.count)
+    end
+    g.count == 0 && return
+    p = r.labels
+    glUseProgram(p.id)
+    setuniform(p, :u_vp, fc.vp); setuniform(p, :u_model, a.model)
+    setuniform(p, :u_viewport, fc.viewport)
+    setuniform(p, :u_halo_color, Vec4f(s.background[1] * 0.5f0, s.background[2] * 0.5f0, s.background[3] * 0.5f0, 0.85f0))
+    glBindVertexArray(g.vao)
+    for (halo, width) in ((1, 4.0f0), (0, 1.6f0))      # dark outline, then the text
+        setuniform(p, :u_halo, halo)
+        setuniform(p, :u_width, width)
+        glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, g.count)
+    end
 end
 
 function _edl_pass!(r::Renderer, cam::Camera)

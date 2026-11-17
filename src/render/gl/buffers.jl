@@ -103,6 +103,25 @@ mutable struct GPUStream <: GPULayer
     vbo::GLBuffer
 end
 
+"One label stroke: a segment in pixels relative to a 3-D anchor; `width > 0` overrides the stroke width (backing plates)."
+struct LabelSegment
+    anchor::Vec3f
+    a::Vec2f
+    b::Vec2f
+    color::Vec4f
+    width::Float32
+end
+LabelSegment(anchor, a, b, color) = LabelSegment(anchor, a, b, color, 0f0)
+
+const PLATE_COLOR = Vec4f(0.05, 0.06, 0.08, 0.72)
+
+mutable struct GPUAnnotations <: GPULayer
+    lines::Any                     # GPULines (declared below)
+    vao::GLuint
+    instances::GLBuffer
+    count::Int
+end
+
 mutable struct GPULines <: GPULayer
     vao::GLuint
     instances::GLBuffer
@@ -168,6 +187,55 @@ function upload(l::LineLayer, corners::GLBuffer)
     glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, sizeof(Vec2f), C_NULL)
     glBindVertexArray(0)
     return GPULines(vao, inst, length(segs), bounds(l))
+end
+
+"Lay out every label's text and marker as pixel-space segments."
+function label_segments(a::Annotations)
+    out = LabelSegment[]
+    for l in a.labels
+        if l.marker
+            push!(out, LabelSegment(l.position, Vec2f(-4, -4), Vec2f(4, 4), l.color),
+                       LabelSegment(l.position, Vec2f(-4, 4), Vec2f(4, -4), l.color))
+        end
+        isempty(l.text) && continue
+        sc = l.size / 6f0                                  # cap height → glyph units
+        nlines = count(==('\n'), l.text) + 1
+        origin = Vec2f(8, 8 + (nlines - 1) * GLYPH_LINE * sc)   # text block above-right
+        # translucent plate behind the text: one thick horizontal segment
+        ext = text_extent(l.text) * sc
+        top = origin[2] + 6sc; bottom = origin[2] - (nlines - 1) * GLYPH_LINE * sc
+        mid = (top + bottom) / 2
+        push!(out, LabelSegment(l.position, Vec2f(origin[1] - 2, mid), Vec2f(origin[1] + ext[1] - 2sc, mid),
+                                PLATE_COLOR, top - bottom + 8))
+        for (p, q) in text_segments(l.text)
+            push!(out, LabelSegment(l.position, origin + sc * p, origin + sc * q, l.color))
+        end
+    end
+    return out
+end
+
+function upload(a::Annotations, corners::GLBuffer)
+    lines = upload(LineLayer(a.lines; width=a.width), corners)
+    segs = label_segments(a)
+    vao = new_vao()
+    inst = GLBuffer(GL_ARRAY_BUFFER, isempty(segs) ? [LabelSegment(Vec3f(0, 0, 0), Vec2f(0, 0), Vec2f(0, 0), Vec4f(0, 0, 0, 0))] : segs)
+    T = LabelSegment
+    _float_attr(0, 3, T, :anchor; divisor=1)
+    _float_attr(1, 2, T, :a; divisor=1)
+    _float_attr(2, 2, T, :b; divisor=1)
+    _float_attr(3, 4, T, :color; divisor=1)
+    _float_attr(5, 1, T, :width; divisor=1)
+    glBindBuffer(GL_ARRAY_BUFFER, corners.id)
+    glEnableVertexAttribArray(4)
+    glVertexAttribPointer(4, 2, GL_FLOAT, GL_FALSE, sizeof(Vec2f), C_NULL)
+    glBindVertexArray(0)
+    return GPUAnnotations(lines, vao, inst, length(segs))
+end
+
+function release!(g::GPUAnnotations)
+    release!(g.lines)
+    glDeleteVertexArrays(1, Ref(g.vao))
+    release!(g.instances)
 end
 
 function release!(g::GPULayer)

@@ -76,6 +76,13 @@ for (k, n) in enumerate(-50:10:50)
 end
 add!(scene, trajectory(wps; frame=scene.frame, width=3, name="uav survey"))
 
+# --- annotations: a roof-to-ground measurement and labels -------------------
+notes = add!(scene, Annotations())
+roof = Vec3f(-30, -15, terrain(-30, -15) + 6)
+measure!(notes, roof, Vec3f(-41, -15, terrain(-41, -15)))
+annotate!(notes, Vec3f(25, 20, terrain(25, 20) + 9.5), "Building B\nroof 9.0 m")
+annotate!(notes, Vec3f(0, 0, 4), "cycloidal disc\n10 lobes")
+
 display(scene)
 if isempty(ARGS)
     open_viewer(scene; title="SpatialRender demo")
