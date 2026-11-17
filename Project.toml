@@ -1,0 +1,53 @@
+name = "SpatialRender"
+uuid = "5d3c1a2e-7b4f-4e6a-9c1d-2f8a6b3e9d41"
+version = "0.1.0"
+authors = ["Rainer Rodrigues"]
+
+[deps]
+GLFW = "f7f18e0c-5ee9-5ccd-a5bf-e8befd85ed98"
+JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+Mmap = "a63ad114-7e13-5084-954f-fe012c677804"
+ModernGL = "66fc600b-dfda-50eb-8b99-91cfa97b1301"
+NearestNeighbors = "b8a86587-4115-5ab1-83bc-aa920d37bbce"
+Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+StructArrays = "09ab397b-f2b6-538f-b94a-2f83cf4a842a"
+
+[compat]
+GLFW = "4.0.0"
+JSON3 = "1.14.4"
+LinearAlgebra = "1"
+Mmap = "1"
+ModernGL = "1.1.8"
+NearestNeighbors = "0.4.29"
+Printf = "1"
+Random = "1"
+StaticArrays = "1.9.25"
+Statistics = "1"
+StructArrays = "0.7.4"
+FileIO = "1"
+GeoInterface = "1"
+GeometryBasics = "0.5"
+KaosCleaner = "0.7"
+Test = "1"
+julia = "1.10"
+
+[weakdeps]
+FileIO = "5789e2e9-d7fb-5bc7-8068-2c6fae9b9549"
+GeoInterface = "cf35fbd7-0cd7-5166-be24-54bfbe79505f"
+GeometryBasics = "5c1252a2-5f33-56bf-86c9-59e7332b4326"
+KaosCleaner = "33cd8d56-0019-45b6-a585-d49e6d89a734"
+
+[extensions]
+SpatialRenderGeoInterfaceExt = "GeoInterface"
+SpatialRenderGeometryBasicsExt = ["GeometryBasics", "FileIO"]
+SpatialRenderKaosCleanerExt = "KaosCleaner"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]

@@ -1,0 +1,407 @@
+using SpatialRender
+using SpatialRender: AABB, center, radius, ntriangles, triangle, ray_box, nchunks, rotate,
+                     rotation_matrix, forward, target, mouse_button!, cursor!, scroll!, key!,
+                     update!, set_viewport!, ishit
+using StaticArrays, LinearAlgebra, Random, Test
+
+const TMP = mktempdir()
+tmp(name) = joinpath(TMP, name)
+
+# A unit-ish test mesh: subdivided sphere-like blob of random triangles.
+function random_mesh(rng, n)
+    verts = MeshVertex[]
+    idx = UInt32[]
+    for t in 1:n
+        c = Vec3f(randn(rng, 3)...) * 3
+        for k in 1:3
+            push!(verts, MeshVertex(c + Vec3f(randn(rng, 3)...) * 0.5f0, Vec3f(0, 0, 1)))
+            push!(idx, UInt32(length(verts) - 1))
+        end
+    end
+    TriMesh(verts, idx)
+end
+
+brute_ray(m, r) = minimum((SpatialRender._moller_trumbore(r, a, b - a, c - a) for (a, b, c) in
+                           (triangle(m, t) for t in 1:ntriangles(m))); init=Inf32)
+
+@testset "SpatialRender" begin
+
+@testset "vertex layouts" begin
+    @test isbitstype(PointVertex) && sizeof(PointVertex) == 24
+    @test fieldoffset(PointVertex, 3) == 16 && fieldoffset(PointVertex, 4) == 20
+    @test sizeof(MeshVertex) == 32 && sizeof(LineVertex) == 40
+end
+
+@testset "frames" begin
+    for (lat, lon, h) in ((0.0, 0.0, 0.0), (47.3769, 8.5417, 408.0), (-33.86, 151.21, -20.0), (80.0, -120.0, 3000.0))
+        lat2, lon2, h2 = ecef_to_geodetic(geodetic_to_ecef(lat, lon, h))
+        @test lat2 ≈ lat atol = 1e-9
+        @test lon2 ≈ lon atol = 1e-9
+        @test h2 ≈ h atol = 1e-4
+    end
+    f = ENUFrame(47.0, 8.0, 500.0)
+    @test norm(to_local(f, (8.0, 47.0, 500.0))) < 1e-6
+    north = to_local(f, (8.0, 47.0 + 1 / 111_200, 500.0))          # ≈ 1 m north
+    @test abs(north[1]) < 1e-3 && 0.98 < north[2] < 1.02 && abs(north[3]) < 1e-3
+    east = to_local(f, (8.001, 47.0, 500.0))
+    @test east[1] > 70 && abs(east[2]) < 0.01
+    up = to_local(f, (8.0, 47.0, 510.0))
+    @test up ≈ Vec3d(0, 0, 10) atol = 1e-6
+    p = Vec3d(123.4, -56.7, 8.9)
+    @test to_local(f, to_world(f, p)) ≈ p atol = 1e-6
+    o = OffsetFrame(500_000.0, 5_200_000.0, 400.0)
+    @test to_local(o, (500_001.25, 5_200_002.5, 401.0)) == Vec3d(1.25, 2.5, 1.0)
+end
+
+@testset "STL" begin
+    m = TriMesh([MeshVertex(Vec3f(0, 0, 0), Vec3f(0, 0, 1)), MeshVertex(Vec3f(1, 0, 0), Vec3f(0, 0, 1)),
+                 MeshVertex(Vec3f(0, 1, 0), Vec3f(0, 0, 1)), MeshVertex(Vec3f(0, 0, 1), Vec3f(0, 0, 1))],
+                UInt32[0, 2, 1, 0, 1, 3, 1, 2, 3, 0, 3, 2])
+    save_stl(tmp("tet.stl"), m)
+    @test filesize(tmp("tet.stl")) == 84 + 50 * 4
+    hard = load_stl(tmp("tet.stl"))
+    @test ntriangles(hard) == 4 && length(hard.vertices) == 12
+    @test all(norm(v.normal) ≈ 1 for v in hard.vertices)
+    soft = load_stl(tmp("tet.stl"); smooth=true)
+    @test length(soft.vertices) == 4 && ntriangles(soft) == 4
+    mm = load_stl(tmp("tet.stl"); scale=1e-3)
+    @test bounds(mm).hi ≈ Vec3f(1e-3, 1e-3, 1e-3)
+
+    write(tmp("tri.stl"), """
+    solid test
+      facet normal 0 0 1
+        outer loop
+          vertex 0 0 0
+          vertex 1 0 0
+          vertex 0 1 0
+        endloop
+      endfacet
+    endsolid test
+    """)
+    a = load_stl(tmp("tri.stl"))
+    @test ntriangles(a) == 1 && a.vertices[1].normal ≈ Vec3f(0, 0, 1)
+    @test_throws ErrorException load_mesh("part.step")
+end
+
+@testset "OBJ" begin
+    write(tmp("quad.obj"), """
+    # a quad with uv and normals, then a triangle with negative indices
+    v 0 0 0
+    v 1 0 0
+    v 1 1 0
+    v 0 1 0
+    vt 0 0
+    vt 1 0
+    vt 1 1
+    vt 0 1
+    vn 0 0 1
+    f 1/1/1 2/2/1 3/3/1 4/4/1
+    v 0 0 1
+    f -1 -5 -4
+    """)
+    m = load_obj(tmp("quad.obj"))
+    @test ntriangles(m) == 3
+    @test m.vertices[3].uv == Vec2f(1, 1)
+    @test bounds(m).hi == Vec3f(1, 1, 1)
+end
+
+@testset "LAS" begin
+    rng = Xoshiro(3)
+    n = 5000
+    origin = Vec3d(612_345.0, 5_123_456.0, 310.0)        # UTM-like coordinates
+    world = [origin + Vec3d(100rand(rng), 100rand(rng), 20rand(rng)) for _ in 1:n]
+    fr = OffsetFrame(origin)
+    pc = PointCloud([Vec3f(to_local(fr, p)) for p in world];
+                    intensity=rand(rng, n), classification=rand(rng, 0:9, n),
+                    rgb=[(rand(rng, UInt8), rand(rng, UInt8), rand(rng, UInt8)) for _ in 1:n])
+    pc.gps_time = collect(range(1000.0, 1010.0, length=n))
+    save_las(tmp("t.las"), pc; frame=fr, scale=0.001)
+    h = read_las_header(tmp("t.las"))
+    @test h.npoints == n && h.point_format == 3 && h.version == v"1.2"
+    back, f2 = load_las(tmp("t.las"); frame=fr, gps_time=true)
+    @test length(back) == n
+    err = maximum(norm(back.vertices[i].position - pc.vertices[i].position) for i in 1:n)
+    @test err < 1e-3                                     # mm quantisation, no Float32 loss
+    @test all(back.vertices[i].classification == pc.vertices[i].classification for i in 1:n)
+    @test all(back.vertices[i].rgba == pc.vertices[i].rgba for i in 1:n)
+    @test back.gps_time ≈ pc.gps_time
+    @test back.color_mode == Int32(COLOR_RGB)
+    # default frame: centred on the file's bounds, so local coordinates are small
+    c, fc = load_las(tmp("t.las"))
+    @test fc isa OffsetFrame && maximum(maximum(abs.(v.position)) for v in c.vertices) < 60
+    @test length(first(load_las(tmp("t.las"); stride=10))) == n ÷ 10
+    sel, _ = load_las(tmp("t.las"); classes=[2])
+    @test length(sel) == count(v -> v.classification == 2, pc.vertices) > 0
+    # load! adopts the LAS frame for an empty scene
+    s = Scene(); load!(s, tmp("t.las"))
+    @test s.frame isa OffsetFrame && length(s.layers) == 1
+end
+
+@testset "GeoJSON" begin
+    write(tmp("roads.geojson"), """
+    {"type": "FeatureCollection", "features": [
+      {"type": "Feature", "properties": {"stroke": "#ff0000"},
+       "geometry": {"type": "LineString", "coordinates": [[8.0, 47.0], [8.001, 47.0], [8.001, 47.001]]}},
+      {"type": "Feature", "properties": {},
+       "geometry": {"type": "Polygon", "coordinates": [[[8.0, 47.0], [8.0005, 47.0], [8.0005, 47.0005], [8.0, 47.0]]]}},
+      {"type": "Feature", "properties": null,
+       "geometry": {"type": "MultiPoint", "coordinates": [[8.0, 47.0, 10.0], [8.0002, 47.0002]]}}
+    ]}
+    """)
+    f = ENUFrame(47.0, 8.0)
+    ll, pts, fr = load_geojson(tmp("roads.geojson"); frame=f)
+    @test fr === f
+    @test length(ll.polylines) == 2
+    @test ll.polylines[1].color == Vec4f(1, 0, 0, 1)
+    @test norm(ll.polylines[1].points[1]) < 1e-3
+    @test 70 < ll.polylines[1].points[2][1] < 80        # 0.001° lon at 47° ≈ 76 m
+    @test length(pts) == 2 && isapprox(pts.vertices[1].position[3], 10; atol=1e-3)
+    @test length(SpatialRender.segments(ll)) == 2 + 3
+    s = Scene(); load!(s, tmp("roads.geojson"))
+    @test s.frame isa ENUFrame && length(s.layers) == 2
+end
+
+@testset "trajectory" begin
+    t = trajectory([Vec3d(i, 0, 0) for i in 0:10])
+    @test length(t.polylines) == 10
+    @test t.polylines[1].color != t.polylines[end].color
+    @test length(trajectory(rand(3, 5); colormap=:solid).polylines) == 1
+end
+
+@testset "filters" begin
+    rng = Xoshiro(7)
+    plane = [Vec3f(20rand(rng) - 10, 20rand(rng) - 10, 0.02randn(rng)) for _ in 1:20_000]
+    boxes = [Vec3f(rand(rng) + 2, rand(rng) + 2, 2rand(rng) + 0.5) for _ in 1:3000]
+    outl = [Vec3f(60rand(rng) - 30, 60rand(rng) - 30, 30 + 10rand(rng)) for _ in 1:20]
+    pc = PointCloud(vcat(plane, boxes, outl))
+    sor = keep_mask(StatisticalOutlierFilter(k=8, nsigma=2.0), pc)
+    @test count(.!sor[end-19:end]) == 20                 # all sparse outliers removed
+    @test count(sor[1:end-20]) > 0.95 * (length(pc) - 20)
+
+    rad = keep_mask(RadiusOutlierFilter(radius=1.0, min_neighbors=3), pc)
+    @test !any(rad[end-19:end])
+
+    @test count(voxel_downsample(pc, 1.0)) <= 2 * 20 * 20 + 2 * 2 * 3 + 20
+    plane_fit = fit_ground_plane(pc; threshold=0.1)
+    @test plane_fit !== nothing && plane_fit[1][3] > 0.999 && abs(plane_fit[2]) < 0.02
+    g = ground_mask(pc; threshold=0.1)
+    @test count(g[1:20_000]) > 19_900 && count(g[20_001:end]) < 50
+    above = apply_filter(GroundPlaneFilter(threshold=0.1), pc)
+    @test 3000 <= length(above) < 3100
+    cl = apply_filter(GroundPlaneFilter(threshold=0.1, mode=:classify), pc)
+    @test length(cl) == length(pc) && count(v -> v.classification == 2, cl.vertices) > 19_900
+
+    crop = apply_filter(CropBox(Vec3f(1.5, 1.5, 0.3), Vec3f(3.5, 3.5, 3)), pc)
+    @test length(crop) == 3000
+    pipe = GroundPlaneFilter(threshold=0.1) |> StatisticalOutlierFilter()
+    out = apply_filter(pipe, pc)
+    @test length(out) < length(above) && length(out) > 2800
+    @test count(keep_mask(pipe, pc)) == length(out)
+
+    if Base.find_package("KaosCleaner") === nothing
+        @test_throws ErrorException keep_mask(AttributeOutlierFilter(), pc)
+    end
+end
+
+@testset "BVH ray casting" begin
+    rng = Xoshiro(11)
+    m = random_mesh(rng, 2000)
+    bvh = build_bvh(m)
+    @test sort(bvh.tris) == 1:ntriangles(m)
+    @test SpatialRender.depth(bvh) < 40
+    hits = 0
+    for _ in 1:300
+        r = Ray(Vec3f(randn(rng, 3)...) * 12, Vec3f(randn(rng, 3)...))
+        t, tri = raycast(bvh, r)
+        tb = brute_ray(m, r)
+        @test t ≈ tb || (isinf(t) && isinf(tb))
+        isfinite(t) && (hits += 1)
+    end
+    @test hits > 20
+    r = Ray(Vec3f(0, 0, 50), Vec3f(0, 0, -1))
+    raycast(bvh, r)
+    @test (@allocated raycast(bvh, r)) == 0
+end
+
+@testset "point index, culling, LOD, picking" begin
+    rng = Xoshiro(5)
+    pts = [Vec3f(100rand(rng), 100rand(rng), 5rand(rng)) for _ in 1:100_000]
+    pc = PointCloud(pts)
+    orig = Set(pts)
+    ix = build_point_index(pc; chunk_size=1000)
+    @test Set(v.position for v in pc.vertices) == orig            # a permutation
+    @test sum(ix.chunks.count) == length(pc) && nchunks(ix) >= 100
+    for c in eachindex(ix.chunks)                                   # chunk boxes are tight
+        rng_ = ix.chunks.first[c]+1:ix.chunks.first[c]+ix.chunks.count[c]
+        @test all(contains_point(ix.chunks.box[c], pc.vertices[k].position) for k in rng_)
+    end
+
+    cam = Camera(position=Vec3d(50, 50, 20), target=Vec3d(100, 100, 0), aspect=1.5)
+    cam.far = 500
+    vp = view_projection(cam)
+    fr = frustum_from_matrix(vp)
+    vis = cull!(ix, fr)
+    drawn = falses(length(pc))
+    for i in 1:vis.n
+        drawn[vis.ranges.first[i]+1:vis.ranges.first[i]+vis.ranges.count[i]] .= true
+    end
+    inside = [intersects(fr, v.position) for v in pc.vertices]
+    @test all(drawn[inside])                                        # conservative
+    @test count(drawn) < length(pc)                                 # but culls
+    @test vis.npoints == count(drawn)
+    @test vis.n <= nchunks(ix)
+    cull!(ix, fr; eye=Vec3f(cam.position), pixels_per_radian=800.0)
+    @test (@allocated cull!(ix, fr; eye=Vec3f(cam.position), pixels_per_radian=800.0)) == 0
+    lod = cull!(ix, fr; eye=Vec3f(cam.position), pixels_per_radian=200.0, density=0.05)
+    @test lod.npoints < count(drawn)
+
+    # every frustum corner direction
+    @test intersects(fr, Vec3f(80, 80, 0))
+    @test !intersects(fr, Vec3f(10, 10, 0))                        # behind the camera
+
+    # picking a known point
+    k = 4242
+    p = pc.vertices[k].position
+    ray = Ray(p + Vec3f(0, 0, 50), Vec3f(0, 0, -1))
+    t, i = pick_point(pc, ix, ray; angle=1e-5)
+    @test i != 0 && isapprox(pc.vertices[i].position[1], p[1]; atol=1e-2)
+    @test t <= 50 + 1e-3
+    hit = raycast([(pc, ix)], ray; angle=1e-5)
+    @test ishit(hit) && hit.layer === pc
+    @test !ishit(raycast([(pc, ix)], Ray(Vec3f(0, 0, 100), Vec3f(0, 0, 1))))
+    idx, d = nearest_points(ix, p, 3)
+    @test idx[1] == k && d[1] == 0
+    @test k in points_in_radius(ix, p, 0.1)
+end
+
+@testset "camera" begin
+    q = Quat(Vec3d(1, 2, 3), 0.7)
+    @test rotation_matrix(Quat(rotation_matrix(q))) ≈ rotation_matrix(q)
+    @test rotate(q, Vec3d(1, 0, 0)) ≈ rotation_matrix(q) * Vec3d(1, 0, 0)
+
+    cam = Camera(position=Vec3d(10, -10, 5), target=Vec3d(1, 2, 3))
+    V = view_matrix(cam)
+    t = V * SVector(1f0, 2f0, 3f0, 1f0)
+    @test abs(t[1]) < 1e-4 && abs(t[2]) < 1e-4 && t[3] < 0      # target on -Z
+    @test target(cam) ≈ Vec3d(1, 2, 3)
+    clip = view_projection(cam) * SVector(1f0, 2f0, 3f0, 1f0)
+    @test abs(clip[1] / clip[4]) < 1e-5 && abs(clip[2] / clip[4]) < 1e-5
+
+    d0 = cam.distance
+    orbit!(cam, 0.5, 0.2)
+    @test target(cam) ≈ Vec3d(1, 2, 3) atol = 1e-9
+    @test norm(cam.position - Vec3d(1, 2, 3)) ≈ d0
+    for _ in 1:50; orbit!(cam, 0.0, 0.3); end                        # pitch clamped
+    @test forward(cam)[3] > -1 && SpatialRender.up(cam)[3] > 0
+    tgt = target(cam)
+    pan!(cam, 100, 0, 800)
+    @test target(cam) != tgt && cam.distance ≈ d0
+    dolly!(cam, 3)
+    @test cam.distance ≈ d0 * 0.9^3
+
+    r = screen_ray(cam, 640, 400, 1280, 800)
+    @test r.dir ≈ Vec3f(forward(cam)) atol = 1e-5
+    b = AABB(Vec3f(-1, -1, -1), Vec3f(1, 1, 1))
+    frame!(cam, b)
+    @test target(cam) ≈ Vec3d(0, 0, 0) atol = 1e-9
+    fr = frustum_from_matrix(view_projection(cam))
+    @test all(intersects(fr, Vec3f(x, y, z)) for x in (-1, 1), y in (-1, 1), z in (-1, 1))
+
+    cam.ortho = true
+    P = projection_matrix(cam)
+    @test P[4, 4] == 1
+end
+
+@testset "controller state machine" begin
+    cam = Camera(position=Vec3d(0, -10, 0), target=Vec3d(0, 0, 0))
+    ctl = CameraController(cam)
+    set_viewport!(ctl, 800, 600)
+    @test cam.aspect ≈ 800 / 600
+    cursor!(ctl, 100, 100)
+    @test mouse_button!(ctl, :left, true; time=1.0) == :none
+    @test ctl.state == SpatialRender.ORBITING
+    p0 = cam.position
+    cursor!(ctl, 150, 100)
+    @test cam.position != p0 && norm(cam.position) ≈ 10
+    mouse_button!(ctl, :left, false)
+    @test ctl.state == SpatialRender.IDLE
+    @test mouse_button!(ctl, :left, true; time=2.0) == :none       # too slow: no double click
+    mouse_button!(ctl, :left, false)
+    @test mouse_button!(ctl, :left, true; time=2.2) == :double_click
+    mouse_button!(ctl, :left, false)
+    mouse_button!(ctl, :right, true)
+    @test ctl.state == SpatialRender.PANNING
+    mouse_button!(ctl, :right, false)
+    scroll!(ctl, 2)
+    @test cam.distance < 10
+    @test update!(ctl, 0.016) == true && update!(ctl, 0.016) == false
+
+    key!(ctl, :tab, true); key!(ctl, :tab, false)
+    @test ctl.mode == FlyMode
+    p0 = cam.position
+    key!(ctl, :w, true)
+    update!(ctl, 0.5)
+    @test norm(cam.position - p0) ≈ ctl.fly_speed * 0.5
+    key!(ctl, :w, false); key!(ctl, :shift, true); key!(ctl, :d, true)
+    p0 = cam.position
+    update!(ctl, 0.5)
+    @test norm(cam.position - p0) ≈ 4 * ctl.fly_speed * 0.5
+    key!(ctl, :d, false)
+    mouse_button!(ctl, :left, true)
+    @test ctl.state == SpatialRender.LOOKING
+end
+
+@testset "PNG writer" begin
+    img = [(UInt8(x), UInt8(y), 0x80) for y in 1:3, x in 1:4]
+    write_png(tmp("t.png"), img)
+    b = read(tmp("t.png"))
+    @test b[1:8] == UInt8[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+    @test ntoh(reinterpret(UInt32, b[17:20])[1]) == 4      # width
+    @test SpatialRender._crc32(Vector{UInt8}("IEND")) == 0xae426082
+end
+
+# --- GPU tests: only when an OpenGL 4.1 context can be created ---------------
+gl_available = try
+    SpatialRender.with_hidden_context(() -> true)
+catch
+    false
+end
+
+@testset "OpenGL backend" begin
+    if !gl_available
+        @info "no OpenGL 4.1 context available; skipping GPU tests"
+        @test_skip false
+    else
+        res = validate_shaders(backend=:gl)
+        @test length(res) == 6
+        for r in res
+            r.ok || @error "shader $(r.name) $(r.stage)" r.log
+            @test r.ok
+        end
+        bad = ShaderSource(:bad, SpatialRender.GLSL_HEADER * "void main() { gl_Position = vec4(undefined_thing); }",
+                           SpatialRender.GLSL_HEADER * "out vec4 f; void main() { f = vec4(1); }")
+        r = validate_shaders((bad,); backend=:gl)
+        @test !r[1].ok && occursin("undefined_thing", r[1].log)
+
+        rng = Xoshiro(2)
+        scene = Scene()
+        add!(scene, PointCloud([Vec3f(randn(rng), randn(rng), randn(rng)) for _ in 1:20_000]))
+        cube = load_stl(save_stl(tmp("c.stl"), random_mesh(rng, 50)))
+        cube.wireframe = true
+        add!(scene, cube)
+        add!(scene, trajectory([Vec3d(cos(t) * 4, sin(t) * 4, 0) for t in range(0, 2π, length=50)]))
+        bg = RenderSettings().background
+        bg8 = round.(UInt8, bg[1:3] .* 255)
+        img = render_offscreen(scene; width=320, height=240)
+        @test size(img) == (240, 320)
+        nonbg = count(p -> maximum(abs.(Int.(p) .- Int.(Tuple(bg8)))) > 8, img)
+        @test nonbg > 0.05 * length(img)
+        before = compile_cache_stats()
+        render_offscreen(scene; width=64, height=64)
+        @test compile_cache_stats().misses == before.misses + 3     # new context → recompiled
+        screenshot(tmp("s.png"), scene; width=128, height=96)
+        @test filesize(tmp("s.png")) > 128 * 96 * 3
+    end
+end
+
+end
