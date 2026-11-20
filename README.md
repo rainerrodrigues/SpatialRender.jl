@@ -127,6 +127,41 @@ clean = AttributeOutlierFilter(attributes = [:intensity], method = "hampel")(cle
 `GeometryBasics` also exports `Vec3f`; qualify it (`SpatialRender.Vec3f`)
 when using both.
 
+## GPU on WSL2
+
+On WSL2, SpatialRender selects a hardware GPU before it opens its first
+window. Mesa reaches Windows GPUs through its `d3d12` driver, but by default
+it often falls back to the CPU. On hybrid laptops it also picks the
+integrated GPU first, and if that GPU's WSL driver fails, Mesa gives up
+instead of trying the discrete one. SpatialRender sets `GALLIUM_DRIVER=d3d12`
+and tries `MESA_D3D12_DEFAULT_ADAPTER_NAME` = NVIDIA, AMD, Intel, then the
+default. Each candidate is checked with a real context; if none works, the
+original environment is restored and rendering stays on the CPU.
+`configure_gpu!()` reports what was chosen.
+
+- Your own `GALLIUM_DRIVER` is never overridden.
+- `SPATIALRENDER_GPU_AUTOCONFIG=0` disables the selection.
+- To give *every* OpenGL program in WSL the GPU, add these to `~/.profile`
+  (adjust the adapter name to your GPU):
+
+  ```bash
+  export GALLIUM_DRIVER=d3d12
+  export MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA
+  ```
+
+Measured on a GTX 1650 laptop (WSLg, 1280×720, eye-dome lighting on):
+
+| Scene | GPU (D3D12) | CPU (llvmpipe) |
+|---|---|---|
+| 500k points, every point drawn | 5.1 ms (195 fps) | 58 ms |
+| 5M points, every point drawn | 14.5 ms (69 fps) | 408 ms |
+| 5M points, LOD | 7.2 ms (139 fps) | 79 ms |
+
+All vertex attributes are kept 4-byte aligned. D3D12-backed drivers
+otherwise convert vertex buffers on the CPU for every draw: an unaligned
+1-byte attribute once made multi-range draws hang and lose the device.
+A test guards the layouts.
+
 ## Limits
 
 - **STEP / IGES** are B-rep CAD, not meshes; tessellate them to STL/OBJ first
@@ -137,8 +172,6 @@ when using both.
 - Out-of-core clouds show density steps between refined and unrefined nodes
   when the point budget is much smaller than the visible data. They are not
   pickable yet: double-click and measure mode work on in-memory layers only.
-- On WSL2, OpenGL often falls back to Mesa's CPU rasterizer (llvmpipe);
-  the viewer warns when that happens. Rendering is correct but slow.
 - The backend is OpenGL 4.1 core (the newest macOS supports), not WebGPU.
   Rendering is isolated in `src/render/`, so another backend can replace it
   without touching the core.

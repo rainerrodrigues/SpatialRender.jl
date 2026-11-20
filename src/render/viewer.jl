@@ -4,6 +4,8 @@
 const CONTEXT_COUNTER = Ref{UInt}(0)
 
 function _window_hints(; visible::Bool=true, samples::Int=4)
+    configure_gpu!()                  # once per session: pick a hardware GPU on WSL
+    GLFW.DefaultWindowHints()
     GLFW.WindowHint(GLFW.CONTEXT_VERSION_MAJOR, 4)
     GLFW.WindowHint(GLFW.CONTEXT_VERSION_MINOR, 1)
     GLFW.WindowHint(GLFW.OPENGL_PROFILE, GLFW.OPENGL_CORE_PROFILE)
@@ -35,8 +37,10 @@ end
 function warn_if_software()
     info = gl_info()
     info.software && @warn """OpenGL is running on the CPU ($(info.renderer)); frame rates will be low.
-        On WSL2 this usually means Mesa could not open the GPU through /dev/dxg: update the
-        Windows GPU driver and WSL (`wsl --update`), and check that `glxinfo -B` reports `D3D12`."""
+        GPU selection: $(GPU_SELECTION[])
+        On WSL2, Mesa needs GALLIUM_DRIVER=d3d12 and, on hybrid laptops,
+        MESA_D3D12_DEFAULT_ADAPTER_NAME=<NVIDIA|AMD|Intel> to skip an adapter whose driver fails.
+        If no adapter works, update the Windows GPU driver and run `wsl --update`."""
     return info
 end
 

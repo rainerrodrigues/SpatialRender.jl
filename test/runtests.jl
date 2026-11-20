@@ -36,6 +36,12 @@ brute_ray(m, r) = minimum((SpatialRender._moller_trumbore(r, a, b - a, c - a) fo
     @test isbitstype(PointVertex) && sizeof(PointVertex) == 24
     @test fieldoffset(PointVertex, 3) == 16 && fieldoffset(PointVertex, 4) == 20
     @test sizeof(MeshVertex) == 32 && sizeof(LineVertex) == 40
+    # D3D12-backed GL (Mesa on WSL) converts vertex buffers on the CPU, per
+    # draw, when an attribute offset is not 4-byte aligned: keep them aligned
+    for T in (PointVertex, MeshVertex, LineVertex, SpatialRender.LabelSegment)
+        @test all(fieldoffset(T, i) % 4 == 0 for i in 1:fieldcount(T) if sizeof(fieldtype(T, i)) >= 4 || i == 1)
+        @test sizeof(T) % 4 == 0
+    end
 end
 
 @testset "frames" begin
@@ -494,6 +500,19 @@ end
     away = Camera(position=Vec3d(0, 0, 5000), target=Vec3d(0, 0, 10_000))
     select_nodes!(out, wanted, o, frustum_from_matrix(view_projection(away)), Vec3f(away.position), 800f0, i -> true)
     @test isempty(out)
+end
+
+@testset "GPU selection" begin
+    # outside WSL, or with the user's own GALLIUM_DRIVER, nothing is changed
+    if !SpatialRender.is_wsl_gpu()
+        @test occursin("not WSL", configure_gpu!(force=true))
+    end
+    @test SpatialRender._is_software("llvmpipe (LLVM 21.1.8, 256 bits)")
+    @test !SpatialRender._is_software("D3D12 (NVIDIA GeForce GTX 1650)")
+    withenv("SPATIALRENDER_GPU_AUTOCONFIG" => "0") do
+        @test occursin("disabled", configure_gpu!(force=true))
+    end
+    SpatialRender.GPU_CONFIGURED[] = false            # let the GL tests below configure normally
 end
 
 @testset "PNG writer" begin

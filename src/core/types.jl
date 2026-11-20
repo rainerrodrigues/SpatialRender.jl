@@ -85,6 +85,8 @@ struct LineVertex
 end
 
 @assert sizeof(PointVertex) == 24
+# every GPU attribute offset must be a multiple of 4 (see point_layout!)
+@assert all(fieldoffset(PointVertex, i) % 4 == 0 for i in (1, 2, 3, 4))
 @assert sizeof(MeshVertex) == 32
 @assert sizeof(LineVertex) == 40
 

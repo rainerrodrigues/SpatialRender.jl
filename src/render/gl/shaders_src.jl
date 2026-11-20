@@ -37,8 +37,10 @@ const POINT_SHADER = ShaderSource(:points, GLSL_HEADER * """
 layout(location = 0) in vec3 a_pos;
 layout(location = 1) in float a_intensity;
 layout(location = 2) in vec4 a_rgba;
-layout(location = 3) in uint a_class;
-layout(location = 4) in uint a_flags;    // streaming layers: scan sequence number (mod 256)
+// bytes 20–23 read as one aligned uvec4: (classification, flags, padding).
+// D3D12 (Mesa on WSL) needs 4-byte-aligned vertex attributes; an attribute
+// at byte 21 forces a CPU conversion of the vertex buffer on every draw.
+layout(location = 3) in uvec4 a_class_flags;
 
 uniform mat4 u_vp;
 uniform mat4 u_model;
@@ -57,6 +59,8 @@ out vec4 v_color;
 $GLSL_TURBO
 
 void main() {
+    uint a_class = a_class_flags.x;
+    uint a_flags = a_class_flags.y;     // streaming layers: scan sequence number (mod 256)
     vec4 world = u_model * vec4(a_pos, 1.0);
     vec4 clip = u_vp * world;
     gl_Position = clip;

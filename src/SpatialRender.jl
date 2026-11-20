@@ -74,6 +74,7 @@ include("render/gl/buffers.jl")
 include("render/gl/pipelines.jl")
 include("render/gl/octree_gl.jl")
 include("render/gl/renderer.jl")
+include("render/gpu_select.jl")
 include("render/viewer.jl")
 
 # geometry
@@ -109,7 +110,7 @@ export Quat, Camera, OrbitMode, FlyMode, view_matrix, projection_matrix, view_pr
        look_at!, orbit!, pan!, dolly!, fly_move!, fly_look!, frame!, screen_ray,
        CameraController, InputState, set_pivot!
 # render
-export open_viewer, gl_info, Viewer, step!, run!, pick!, measure_click!, Renderer, RenderSettings, render_frame!,
+export open_viewer, gl_info, configure_gpu!, Viewer, step!, run!, pick!, measure_click!, Renderer, RenderSettings, render_frame!,
        render_offscreen, screenshot, write_png, compile_cache_stats, validate_shaders,
        ShaderSource
 
