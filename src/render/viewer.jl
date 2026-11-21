@@ -231,7 +231,7 @@ function pick!(v::Viewer, x::Real, y::Real; set_pivot::Bool=false)
     ishit(hit) || return hit
     p = hit.position
     world = to_world(v.renderer.scene.frame, Vec3d(p))
-    kind = hit.layer isa PointCloud ? "point" : "triangle"
+    kind = hit.layer isa TriMesh ? "triangle" : "point"
     @info @sprintf("picked %s %d of \"%s\"  local (%.3f, %.3f, %.3f)  source (%.6f, %.6f, %.3f)  range %.2f m",
                    kind, hit.index, hit.layer.name, p..., world..., hit.t)
     v.renderer.settings.highlight = hit.layer isa PointCloud ? (hit.layer, hit.index) : (nothing, 0)

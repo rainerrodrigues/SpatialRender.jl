@@ -115,6 +115,8 @@ setuniform(p::GLProgram, s::Symbol, v::Vec3f) = glUniform3f(loc(p, s), v[1], v[2
 setuniform(p::GLProgram, s::Symbol, v::Vec4f) = glUniform4f(loc(p, s), v[1], v[2], v[3], v[4])
 setuniform(p::GLProgram, s::Symbol, m::Mat4f) = glUniformMatrix4fv(loc(p, s), 1, GL_FALSE, Ref(m))
 setuniform(p::GLProgram, s::Symbol, m::Mat3f) = glUniformMatrix3fv(loc(p, s), 1, GL_FALSE, Ref(m))
+setuniform(p::GLProgram, s::Symbol, v::NTuple{N, Float32}) where {N} =
+    glUniform1fv(loc(p, s), N, Ref(v))
 setuniform(p::GLProgram, s::Symbol, v::Vector{Vec4f}) =
     glUniform4fv(loc(p, s), length(v), Ptr{Float32}(pointer(v)))
 

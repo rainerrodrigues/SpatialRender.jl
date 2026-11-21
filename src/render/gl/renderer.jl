@@ -138,8 +138,12 @@ world_box(r::Renderer) = reduce(union, (transform_box(l.model, local_box(r.gpu[l
                                 init=AABB())
 
 "Accelerators for picking: `(layer, BVH | PointIndex)` pairs."
-pick_items(r::Renderer) =
-    [(l, g isa GPUMesh ? g.bvh : g.index) for (l, g) in r.gpu if g isa GPUMesh || g isa GPUPoints]
+pick_items(r::Renderer) = [(l, _pick_accel(g)) for (l, g) in r.gpu if _pickable(g)]
+_pickable(g) = g isa GPUMesh || g isa GPUPoints || g isa GPUStream || g isa GPUOctree
+_pick_accel(g::GPUMesh) = g.bvh
+_pick_accel(g::GPUPoints) = g.index
+_pick_accel(g::GPUStream) = nothing
+_pick_accel(g::GPUOctree) = g
 
 """
     render_frame!(renderer, camera, width, height)

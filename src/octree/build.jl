@@ -129,7 +129,7 @@ function build_octree(source, out_dir::AbstractString; node_capacity::Int=50_000
     end
     close(data)
     rm(tmp; recursive=true, force=true)
-    _write_index(out_dir, nodes, n, frame, root, src, node_capacity, d)
+    _write_index(out_dir, nodes, n, frame, root, src, node_capacity, d, spacing_div)
     return out_dir
 end
 
@@ -238,13 +238,13 @@ function _build_subtree!(emit!, pts, name, depth, box, cap, div, occupied, rng)
     end
 end
 
-function _write_index(dir, nodes, n, frame, root, src, cap, d)
+function _write_index(dir, nodes, n, frame, root, src, cap, d, div)
     v3(x) = [Float64(x[1]), Float64(x[2]), Float64(x[3])]
     idx = Dict(
         "version" => OCTREE_VERSION, "points" => n, "node_capacity" => cap, "bucket_depth" => d,
         "origin" => v3(frame.origin), "root" => Dict("lo" => v3(root.lo), "hi" => v3(root.hi)),
         "bounds" => Dict("lo" => v3(src.lo - frame.origin), "hi" => v3(src.hi - frame.origin)),
-        "has_rgb" => src.has_rgb,
+        "has_rgb" => src.has_rgb, "spacing_div" => div,
         "nodes" => [Dict("name" => nd.name, "depth" => nd.depth, "offset" => nd.offset,
                          "count" => nd.count, "lo" => v3(nd.box.lo), "hi" => v3(nd.box.hi),
                          "children" => nd.children)

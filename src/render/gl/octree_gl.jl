@@ -13,6 +13,7 @@ mutable struct GPUOctree <: GPULayer
     draw::Vector{Int32}
     wanted::Vector{Int32}
     heap::NodeHeap
+    drawn::BitVector                           # membership of `draw`, for adaptive sizes
 end
 
 "Nodes uploaded per frame at most (keeps frame times smooth while streaming)."
@@ -29,7 +30,7 @@ function upload(o::OctreeCloud)
         end
     end
     GPUOctree(Dict{Int32, GLuint}(), Dict{Int32, GLBuffer}(), Dict{Int32, Int}(), 0, Set{Int32}(),
-              req, done, loader, 0, Int32[], Int32[], NodeHeap())
+              req, done, loader, 0, Int32[], Int32[], NodeHeap(), falses(length(o.nodes)))
 end
 
 function release!(g::GPUOctree)
@@ -84,15 +85,47 @@ function draw!(g::GPUOctree, o::OctreeCloud, p::GLProgram, fc::FrameContext, s::
     if !isempty(g.draw)
         _point_uniforms!(p, fc, s, o.model, o.point_size, o.color_mode, _zrange(o.model, o.bounds))
         setuniform(p, :u_seq, 0); setuniform(p, :u_highlight, -1)
+        if o.adaptive_size
+            fill!(g.drawn, false); g.drawn[g.draw] .= true
+            setuniform(p, :u_size_mode, 1)
+            setuniform(p, :u_min_px, o.point_size)
+            setuniform(p, :u_octree, 1)
+        end
         for i in g.draw
+            o.adaptive_size && _octant_sizes!(p, o, g, i)
             glBindVertexArray(g.vaos[i])
             glDrawArrays(GL_POINTS, 0, o.nodes[i].count)
             g.last_used[i] = g.frame
             npts += o.nodes[i].count
         end
     end
+    setuniform(p, :u_octree, 0)
     _evict!(g, o)
     return npts
+end
+
+# Per-octant world point sizes for node `i`: a child region with a drawn child
+# is as dense as that child's finest drawn level; otherwise only this node's
+# points cover it.
+const ADAPTIVE_FACTOR = 0.9f0
+function _octant_sizes!(p, o::OctreeCloud, g::GPUOctree, i::Integer)
+    own = node_spacing(o, i)
+    t = o.octants[i]
+    sizes = ntuple(k -> ADAPTIVE_FACTOR * (t[k] != 0 && g.drawn[t[k]] ? _effective_spacing(o, g, t[k]) : own), 8)
+    box = o.nodes[i].box
+    sp = split_axes(extent(box))
+    setuniform(p, :u_node_mid, center(box))
+    setuniform(p, :u_node_split, Vec3f(sp[1], sp[2], sp[3]))
+    setuniform(p, :u_octant_size, sizes)
+end
+
+"Spacing of the finest drawn level under node `i` (its own if no child is drawn)."
+function _effective_spacing(o::OctreeCloud, g::GPUOctree, i::Integer)
+    best = Inf32
+    for c in o.nodes[i].children
+        g.drawn[c] && (best = min(best, _effective_spacing(o, g, c)))
+    end
+    return isfinite(best) ? best : node_spacing(o, i)
 end
 
 "Block until every requested node has arrived and upload it (offscreen rendering)."
@@ -107,3 +140,18 @@ end
 streaming(g::GPUOctree) = !isempty(g.wanted) || isready(g.loaded)
 
 local_box(g::GPUOctree, l) = l.bounds
+
+# Picking: test the nodes drawn in the last frame (what the user sees), points
+# read from the memory map. Index is global into nodes.bin (1-based).
+function pick_layer(o::OctreeCloud, g::GPUOctree, r::Ray; tmax=Inf32, angle=0.003)
+    tanα = Float32(tan(angle))
+    best = Float32(tmax); besti = 0
+    for i in g.draw
+        nd = o.nodes[i]
+        tfar = norm(center(nd.box) - r.origin) + radius(nd.box)
+        ray_box(r, expand(nd.box, tanα * tfar), best) == Inf32 && continue
+        t, k = pick_points_brute(node_points(o, i), r, tanα, best)
+        k != 0 && ((best, besti) = (t, nd.offset + k))
+    end
+    return besti == 0 ? (Inf32, 0, r.origin) : (best, besti, o.data[besti].position)
+end

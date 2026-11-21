@@ -13,7 +13,12 @@ end
 """
     OctreeCloud(dir; point_budget=3_000_000, min_node_pixels=80, point_size=2, color_mode)
 
-A point cloud converted with [`build_octree`](@ref) and streamed from disk:
+A point cloud converted with [`build_octree`](@ref) and streamed from disk.
+With `adaptive_size` (default) each node's points are drawn at a world size
+matching that node's point spacing (never below `point_size` pixels), so
+coarse regions read as continuous surfaces rather than sparse dots.
+
+Streaming details:
 only the nodes that matter for the current view are loaded (on a
 background thread) and kept on the GPU, within `point_budget` points.
 Nodes are refined while their projected size exceeds `min_node_pixels`.
@@ -36,10 +41,14 @@ mutable struct OctreeCloud <: Layer
     visible::Bool
     model::Mat4f
     rev::Int
+    spacing_div::Int
+    adaptive_size::Bool
+    octants::Vector{NTuple{8, Int32}}  # child node per octant digit (0 = none)
 end
 
 function OctreeCloud(dir::AbstractString; name=basename(normpath(dir)), point_budget::Integer=3_000_000,
-                     min_node_pixels::Real=80, point_size::Real=2.0, color_mode=nothing)
+                     min_node_pixels::Real=80, point_size::Real=2.0, color_mode=nothing,
+                     adaptive_size::Bool=true)
     idx = JSON3.read(read(joinpath(dir, "octree.json"), String))
     idx.version == OCTREE_VERSION || error("unsupported octree version $(idx.version)")
     v3(x) = Vec3f(x[1], x[2], x[3])
@@ -53,12 +62,26 @@ function OctreeCloud(dir::AbstractString; name=basename(normpath(dir)), point_bu
     root == 1 || error("octree index must list the root first")
     OctreeCloud(String(name), String(dir), nodes, data, OffsetFrame(Vec3d(idx.origin...)),
                 AABB(v3(idx.bounds.lo), v3(idx.bounds.hi)), idx.points, point_budget,
-                Float32(min_node_pixels), Float32(point_size), Int32(mode), true, IDENTITY4, 0)
+                Float32(min_node_pixels), Float32(point_size), Int32(mode), true, IDENTITY4, 0,
+                Int(get(idx, :spacing_div, 128)), adaptive_size, _octant_table(nodes))
 end
 
 bounds(o::OctreeCloud) = o.bounds
 Base.length(o::OctreeCloud) = o.npoints
 frame(o::OctreeCloud) = o.frame
+function _octant_table(nodes)
+    map(nodes) do nd
+        t = zeros(Int32, 8)
+        for c in nd.children
+            t[parse(Int, nodes[c].name[end])+1] = c
+        end
+        Tuple(t)
+    end
+end
+
+"Typical distance between neighbouring points stored in node `i`."
+node_spacing(o::OctreeCloud, i::Integer) = Float32(maximum(extent(o.nodes[i].box)) / o.spacing_div)
+
 node_points(o::OctreeCloud, i::Integer) = view(o.data, o.nodes[i].offset+1:o.nodes[i].offset+o.nodes[i].count)
 
 # --- a small max-heap of (priority, node) ---------------------------------------

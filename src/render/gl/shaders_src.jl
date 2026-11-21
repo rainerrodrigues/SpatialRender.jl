@@ -47,6 +47,11 @@ uniform mat4 u_model;
 uniform int u_size_mode;        // 0: constant pixels, 1: world size (perspective)
 uniform float u_point_size;     // pixels (mode 0) or metres (mode 1)
 uniform float u_proj_scale;     // viewport height / (2 tan(fov / 2))
+uniform float u_min_px;         // lower bound in world-size mode (adaptive octree sizes)
+uniform int u_octree;           // 1: size per child octant of the current octree node
+uniform vec3 u_node_mid;
+uniform vec3 u_node_split;      // 1 for axes this node splits along
+uniform float u_octant_size[8]; // world point size for each child region
 uniform int u_color_mode;       // 0 height, 1 intensity, 2 classification, 3 rgb, 4 scan age
 uniform int u_seq;              // newest scan sequence number (age mode)
 uniform float u_max_age;        // age (in scans) mapped to the end of the colormap
@@ -64,8 +69,15 @@ void main() {
     vec4 world = u_model * vec4(a_pos, 1.0);
     vec4 clip = u_vp * world;
     gl_Position = clip;
+    float wsize = u_point_size;
+    if (u_octree == 1) {
+        int o = int(u_node_split.x > 0.5 && a_pos.x >= u_node_mid.x)
+              | (int(u_node_split.y > 0.5 && a_pos.y >= u_node_mid.y) << 1)
+              | (int(u_node_split.z > 0.5 && a_pos.z >= u_node_mid.z) << 2);
+        wsize = u_octant_size[o];
+    }
     float px = u_size_mode == 0 ? u_point_size
-                                : u_point_size * u_proj_scale / max(clip.w, 1e-4);
+                                : max(wsize * u_proj_scale / max(clip.w, 1e-4), u_min_px);
     vec3 c;
     if (u_color_mode == 0)      c = turbo((world.z - u_zrange.x) / max(u_zrange.y - u_zrange.x, 1e-6));
     else if (u_color_mode == 1) c = vec3(pow(a_intensity, 0.6));

@@ -414,6 +414,13 @@ end
     end
     @test sp2.written == 4 * 200 * 37 && sp2.seq == 800
     @test all(v -> v.position[1] in 1:4, sp2.buffer[1:length(sp2)])
+    # picking a posed streaming layer (no GPU needed: brute force over the ring)
+    sp3 = StreamingPointCloud(100)
+    push_scan!(sp3, [Vec3f(x, 0, 0) for x in -5:1:5])
+    set_pose!(sp3, Vec3d(0, 10, 0))
+    h = raycast([(sp3, nothing)], Ray(Vec3f(3, 10, 50), Vec3f(0, 0, -1)); angle=1e-3)
+    @test ishit(h) && h.position ≈ Vec3f(3, 10, 0) && h.t ≈ 50
+    @test !ishit(raycast([(sp3, nothing)], Ray(Vec3f(3, 0, 50), Vec3f(0, 0, -1)); angle=1e-3))
 end
 
 @testset "font and annotations" begin
@@ -625,6 +632,18 @@ end
                 SpatialRender.drain!(r); render_frame!(r, cam4, 160, 120)
             end
             @test SpatialRender.OctreeCloud(tmp("oct_pc")).nodes[1].count < r.stats.points <= 50_000   # refined past the root
+            # picking hits a point of a drawn node, within the pick cone
+            items = SpatialRender.pick_items(r)
+            oc = s4.layers[1]
+            hit = raycast(items, screen_ray(cam4, 80, 60, 160, 120); angle=4 * cam4.fov / 120)
+            @test ishit(hit) && hit.layer === oc
+            @test oc.data[hit.index].position ≈ SpatialRender.transform_point(SpatialRender.inverse_pose(oc.model), hit.position) atol = 1e-3
+            # adaptive sizes: octant sizes are positive and never larger than the node's own spacing
+            g = r.gpu[oc]
+            for i in g.draw
+                own = SpatialRender.node_spacing(oc, i)
+                @test 0 < SpatialRender._effective_spacing(oc, g, i) <= own
+            end
             SpatialRender.release!(r)
         end
     end

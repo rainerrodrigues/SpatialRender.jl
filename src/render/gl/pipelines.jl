@@ -53,6 +53,8 @@ function _point_uniforms!(p::GLProgram, fc::FrameContext, s::RenderSettings, M::
     world = s.point_size_mode == :world
     setuniform(p, :u_size_mode, world ? 1 : 0)
     setuniform(p, :u_point_size, world ? s.world_point_size : size)
+    setuniform(p, :u_min_px, 1.0f0)
+    setuniform(p, :u_octree, 0)
     setuniform(p, :u_proj_scale, fc.proj_scale)
     setuniform(p, :u_color_mode, color_mode)
     setuniform(p, :u_zrange, zr)

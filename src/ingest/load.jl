@@ -61,6 +61,7 @@ GeoJSON file an `ENUFrame` at its centre. Later files reuse that frame.
 A directory written by [`build_octree`](@ref) loads as an [`OctreeCloud`](@ref).
 """
 function load!(scene::Scene, path::AbstractString; kwargs...)
+    ispath(path) || throw(ArgumentError("no such file or directory: $path"))
     if isdir(path) && isfile(joinpath(path, "octree.json"))        # converted with build_octree
         o = OctreeCloud(path; kwargs...)
         if isempty(scene.layers) && scene.frame isa IdentityFrame
