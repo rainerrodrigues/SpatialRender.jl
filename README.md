@@ -44,9 +44,9 @@ julia -t auto --project=. examples/replay.jl my_bag/  # replay a ROS 2 bag (no a
 | **Ingestion** | Binary/ASCII STL, OBJ (native); LAS 1.0–1.4, point formats 0–10, via `Mmap` with threaded decoding (5M points ≈ 0.06 s); LAZ through the `laszip`/`pdal` CLI; GeoJSON; trajectories from positions or lon/lat/alt |
 | **Local frames** | `ENUFrame(lat, lon, h)` (WGS84 → ECEF → ENU in Float64), `OffsetFrame` for UTM/projected data. GPU data is Float32 offsets near the origin, so no precision loss |
 | **Preprocessing** | Statistical and radius outlier removal, voxel downsampling, RANSAC ground plane (remove / keep / classify), crop box, composable with `\|>`; `AttributeOutlierFilter` (z-score, IQR, MAD, Hampel) via the KaosCleaner engine |
-| **Indexing** | Binned-SAH BVH for meshes (allocation-free ray casts); point clouds are reordered into contiguous k-d tree chunks and backed by `NearestNeighbors.KDTree` for k-NN and radius queries |
-| **Culling + LOD** | Frustum culling of chunks into a pre-allocated `StructVector{DrawRange}`, whose `first` and `count` arrays feed `glMultiDrawArrays` directly. Points are shuffled inside each chunk, so drawing a shorter prefix gives a uniform subsample. Culling 5M points takes ~8 µs per frame and allocates nothing |
-| **GPU** | Interleaved `PointVertex` (24 B: position, intensity, RGBA, class), `MeshVertex` (32 B: position, normal, uv), per-instance `LineVertex`; isbits layouts handed to `glBufferData` without repacking |
+| **Indexing** | Binned-SAH BVH for meshes (allocation-free ray casts). Point clouds are reordered in place into contiguous k-d tree chunks, which also answer k-NN and radius queries, so the index costs one entry per chunk rather than per point |
+| **Culling + LOD** | Frustum culling of chunks into two pre-allocated `Int32` arrays (`first`, `count`) that feed `glMultiDrawArrays` directly. Points are shuffled inside each chunk, so drawing a shorter prefix gives a uniform subsample. Culling 5M points takes ~8 µs per frame and allocates nothing |
+| **GPU** | Interleaved `PointVertex` (20 B: position, RGBA, 16-bit intensity, class, flags; no padding), `MeshVertex` (32 B: position, normal, uv), per-instance `LineVertex`. These isbits layouts go to `glBufferData` without repacking, with every attribute 4-byte aligned |
 | **Shaders** | Points: pixel- or world-sized round splats colored by height / intensity / ASPRS class / RGB (Turbo map). Meshes: Blinn-Phong headlight, hemisphere ambient, two-sided, wireframe overlay. Lines: screen-space, anti-aliased, near-plane clipped instanced ribbons |
 | **Shader tooling** | Programs cached per context by source hash; `validate_shaders()` checks every stage with `glslangValidator` (CI, no GPU) or the live driver |
 | **Camera** | Quaternion camera, turntable orbit (pitch-clamped), pan, zoom, fly mode, frame-all, top view, ortho toggle, pick-to-pivot |
@@ -56,7 +56,7 @@ julia -t auto --project=. examples/replay.jl my_bag/  # replay a ROS 2 bag (no a
 | **Bag replay** | Native MCAP / rosbag2 reader, ROS 2 message decoding, TF frame tree, timeline player with seek and speed control, status overlay |
 | **Eye-dome lighting** | Screen-space log-depth shading on points and meshes (`B` toggles it) |
 | **Annotations** | Labels (`annotate!`) and measurements (`measure!`: distance, Δz, slope) in an original stroke font, so no font files are needed; measure mode in the viewer |
-| **Output** | Interactive window; `render_offscreen` / `screenshot` to PNG (dependency-free writer) for CI and reports |
+| **Output** | Interactive window; `render_offscreen` / `screenshot` to PNG (zlib from Julia's own `Zlib_jll`) for CI and reports |
 
 ## Viewer controls
 
@@ -161,6 +161,24 @@ using KaosCleaner                                      # enables the extension
 clean = AttributeOutlierFilter(attributes = [:intensity], method = "hampel")(clean)
 ```
 
+## Memory
+
+Measured on a 3M-point LAS file:
+
+| Stage | Memory |
+|---|---|
+| point in RAM and on the GPU | 20 bytes |
+| `load_las` (memory-mapped, threaded) | 20 B/pt, the vertices only |
+| `build_point_index` | 4 B/pt while building; about 16 KB retained in total |
+| statistical / radius outlier filter | ~53 / ~31 B/pt while running, nothing retained (1.7 s / 0.5 s for 3M points on 4 threads) |
+| `voxel_downsample` | ~18 B/pt while running |
+| `build_octree` | about 60 MB of working memory for 3M points beyond the memory-mapped input: the bucket buffers plus one decode chunk, so it is set by `bucket_points`, not the file size |
+| octree at runtime | the memory-mapped node file plus the GPU-resident nodes (at most 2 × the point budget) |
+
+Dependencies beyond Julia's standard library: GLFW and ModernGL (window and
+OpenGL), StaticArrays, JSON3 (GeoJSON and octree index), and the small
+`Zstd_jll` / `Lz4_jll` C libraries for compressed bags.
+
 ## Package extensions
 
 | Load | Enables |
@@ -230,7 +248,7 @@ A test guards the layouts.
 julia --project=. -e 'using Pkg; Pkg.test()'
 ```
 
-1068 tests covering:
+1077 tests covering:
 - frames and every reader (round trips);
 - filters;
 - BVH against brute force, culling conservativeness and zero allocation;

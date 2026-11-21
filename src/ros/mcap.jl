@@ -147,11 +147,9 @@ end
 
 function _decompress(info::ChunkInfo, raw)
     info.compression == "" && return Vector{UInt8}(raw)
-    out = info.compression == "zstd" ? transcode(ZstdDecompressor, Vector{UInt8}(raw)) :
-          info.compression == "lz4"  ? transcode(LZ4FrameDecompressor, Vector{UInt8}(raw)) :
-          error("unsupported MCAP chunk compression $(repr(info.compression))")
-    length(out) == info.uncompressed_size || error("MCAP chunk decompressed to $(length(out)) bytes, expected $(info.uncompressed_size)")
-    return out
+    info.compression == "zstd" && return zstd_decompress(raw, info.uncompressed_size)
+    info.compression == "lz4" && return lz4_decompress(raw, info.uncompressed_size)
+    error("unsupported MCAP chunk compression $(repr(info.compression))")
 end
 
 # Decompressed records of chunk `id`, through a small LRU cache (thread-safe).
@@ -276,8 +274,8 @@ end
 function _flush_chunk!(w::MCAPWriter)
     position(w.chunk) == 0 && return
     raw = take!(w.chunk)
-    comp = w.compression == "zstd" ? transcode(ZstdCompressor, raw) :
-           w.compression == "lz4"  ? transcode(LZ4FrameCompressor, raw) : raw
+    comp = w.compression == "zstd" ? zstd_compress(raw) :
+           w.compression == "lz4"  ? lz4_compress(raw) : raw
     b = IOBuffer()
     write(b, htol(UInt64(w.chunk_start)), htol(UInt64(w.chunk_end)), htol(UInt64(length(raw))),
           htol(UInt32(0)))                                       # crc 0 = not computed (allowed)

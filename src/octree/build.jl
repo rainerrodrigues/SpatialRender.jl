@@ -14,7 +14,7 @@
 #           children (these few nodes duplicate some points; nothing is lost)
 # Output: `nodes.bin` (PointVertex records, node after node) + `octree.json`.
 
-const OCTREE_VERSION = 1
+const OCTREE_VERSION = 2          # 2: 20-byte PointVertex
 
 struct BuildNode
     name::String
@@ -100,18 +100,21 @@ function build_octree(source, out_dir::AbstractString; node_capacity::Int=50_000
         nodes[name] = BuildNode(name, depth, box, written[], length(pts), children)
         written[] += length(pts)
     end
+    # one point buffer + one scratch buffer, reused for every bucket
+    buf = PointVertex[]; scratch = PointVertex[]
     for i in findall(>(0), counts)
         path = joinpath(tmp, "b$i.bin")
-        pts = Vector{PointVertex}(undef, counts[i])
-        open(io -> read!(io, pts), path)
+        resize!(buf, counts[i]); resize!(scratch, counts[i])
+        open(io -> read!(io, buf), path)
         rm(path)
         ci = i - 1
         q = (ci % G[1], (ci ÷ G[1]) % G[2], ci ÷ (G[1] * G[2]))
         name = "r" * _bucket_digits(q, levels, bits)
         lo = root.lo .+ Vec3f(q...) .* csize
-        _build_subtree!(emit!, pts, name, d, AABB(lo, lo .+ csize), node_capacity,
-                        spacing_div, occupied, rng)
+        _build_subtree!(emit!, buf, scratch, 1, length(buf), name, d, AABB(lo, lo .+ csize),
+                        node_capacity, spacing_div, occupied, rng)
     end
+    empty!(buf); empty!(scratch); sizehint!(buf, 0); sizehint!(scratch, 0)
     # pass 4: coarse levels above the buckets, deepest first
     for depth in d-1:-1:0
         names = unique(nm[1:depth+1] for nm in keys(nodes) if length(nm) == depth + 2)
@@ -123,8 +126,8 @@ function build_octree(source, out_dir::AbstractString; node_capacity::Int=50_000
                 append!(pool, _read_node(out_dir, data, nodes[k]))
             end
             shuffle!(rng, pool)
-            keep, _ = _subsample(pool, box, node_capacity, spacing_div, occupied)
-            emit!(name, depth, box, keep, kids)
+            k = _subsample!(pool, nothing, 1, length(pool), box, node_capacity, spacing_div, occupied)
+            emit!(name, depth, box, view(pool, 1:k), kids)
         end
     end
     close(data)
@@ -186,55 +189,61 @@ function _read_node(dir, io, nd::BuildNode)
     return v
 end
 
-# First point per occupied grid cell (points arrive shuffled, so the kept set
-# is a uniform-ish sample), at most `cap`. Returns (kept, rest).
-function _subsample(pts, box::AABB, cap, div, occupied)
+# Keep the first point per occupied grid cell (points arrive shuffled, so the
+# kept set is a uniform-ish sample), at most `cap`, compacted in place to the
+# front of pts[lo:hi]. The rest go to scratch[1:m] (or are dropped when
+# scratch === nothing). Returns the number kept.
+function _subsample!(pts, scratch, lo, hi, box::AABB, cap, div, occupied)
     fill!(occupied, false)
     e = max.(extent(box), 1f-9)
     # cubic cells: `div` along the longest axis, proportionally fewer elsewhere
     nc = clamp.(round.(Int, div .* e ./ maximum(e)), 1, div)
     inv = Vec3f(nc) ./ e
-    keep = PointVertex[]; rest = PointVertex[]
-    sizehint!(keep, min(cap, length(pts)))
-    for v in pts
+    w = lo - 1; m = 0
+    @inbounds for j in lo:hi
+        v = pts[j]
         q = clamp.(floor.(Int, (v.position - box.lo) .* inv), 0, nc .- 1)
         k = q[1] + nc[1] * (q[2] + nc[2] * q[3]) + 1
-        if !occupied[k] && length(keep) < cap
+        if !occupied[k] && w - lo + 1 < cap
             occupied[k] = true
-            push!(keep, v)
-        else
-            push!(rest, v)
+            pts[w += 1] = v                     # w ≤ j: never overwrites an unread point
+        elseif scratch !== nothing
+            scratch[m += 1] = v
         end
     end
-    return keep, rest
+    return w - lo + 1
 end
 
-function _build_subtree!(emit!, pts, name, depth, box, cap, div, occupied, rng)
-    if length(pts) <= cap || depth >= 24
-        shuffle!(rng, pts)
-        emit!(name, depth, box, pts, String[])
+# Build the subtree of the points in pts[lo:hi] in place: subsample this node
+# to the front of the range, counting-sort the rest by child octant behind it,
+# recurse on each child range. Memory: the two buffers only.
+function _build_subtree!(emit!, pts, scratch, lo, hi, name, depth, box, cap, div, occupied, rng)
+    n = hi - lo + 1
+    shuffle!(rng, view(pts, lo:hi))
+    if n <= cap || depth >= 24
+        emit!(name, depth, box, view(pts, lo:hi), String[])
         return
     end
-    shuffle!(rng, pts)
-    keep, rest = _subsample(pts, box, cap, div, occupied)
+    k = _subsample!(pts, scratch, lo, hi, box, cap, div, occupied)
+    m = n - k                                   # rest, now in scratch[1:m]
     mid = center(box)
     sp = split_axes(extent(box))
-    parts = [PointVertex[] for _ in 1:8]
-    for v in rest
-        push!(parts[_octant(v.position, mid, sp)+1], v)
+    counts = zeros(Int, 8)
+    @inbounds for j in 1:m
+        counts[_octant(scratch[j].position, mid, sp)+1] += 1
     end
-    kids = String[]
-    for o in 0:7
-        isempty(parts[o+1]) && continue
-        push!(kids, name * string(o))
+    starts = cumsum(counts) .- counts .+ (lo + k)
+    next = copy(starts)
+    @inbounds for j in 1:m
+        o = _octant(scratch[j].position, mid, sp) + 1
+        pts[next[o]] = scratch[j]; next[o] += 1
     end
-    emit!(name, depth, box, keep, kids)
-    rest = nothing
-    for o in 0:7
-        isempty(parts[o+1]) && continue
-        cb = _child_box(box, o, sp)
-        _build_subtree!(emit!, parts[o+1], name * string(o), depth + 1, cb, cap, div, occupied, rng)
-        parts[o+1] = PointVertex[]                       # free as we go
+    kids = [name * string(o - 1) for o in 1:8 if counts[o] > 0]
+    emit!(name, depth, box, view(pts, lo:lo+k-1), kids)
+    for o in 1:8
+        counts[o] == 0 && continue
+        _build_subtree!(emit!, pts, scratch, starts[o], starts[o] + counts[o] - 1, name * string(o - 1),
+                        depth + 1, _child_box(box, o - 1, sp), cap, div, occupied, rng)
     end
 end
 
@@ -287,7 +296,7 @@ function _octree_source(pc::PointCloud, chunk)
     function foreach_chunk(f, frame)
         o = Vec3f(frame.origin)
         for s in 1:chunk:length(pc)
-            f([PointVertex(v.position - o, v.intensity, v.rgba, v.classification, v.flags, v._pad)
+            f([with_position(v, v.position - o)
                for v in view(pc.vertices, s:min(s + chunk - 1, length(pc)))])
         end
     end

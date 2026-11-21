@@ -45,29 +45,39 @@ end
 # Vertex layouts (std430-compatible, tightly interleaved)
 
 """
-    PointVertex(position, intensity, rgba, classification)
+    PointVertex(position, intensity=0, rgba=white, classification=0)
 
-24-byte interleaved point record:
+20-byte interleaved point record (no padding; every GPU attribute offset is a
+multiple of 4, which D3D12-backed drivers need):
 
-| offset | field          | type          |
-|-------:|----------------|---------------|
-| 0      | position       | 3 × Float32   |
-| 12     | intensity      | Float32 (0–1) |
-| 16     | rgba           | 4 × UInt8     |
-| 20     | classification | UInt8 (ASPRS) |
-| 21     | flags          | UInt8         |
-| 22     | (padding)      | 2 bytes       |
+| offset | field          | type                            |
+|-------:|----------------|---------------------------------|
+| 0      | position       | 3 × Float32                     |
+| 12     | rgba           | 4 × UInt8                       |
+| 16     | intensity      | UInt16 (0–65535, as in LAS)     |
+| 18     | classification | UInt8 (ASPRS)                   |
+| 19     | flags          | UInt8 (streaming: scan number)  |
+
+The convenience constructor takes intensity as a 0–1 float; read it back as
+0–1 with [`intensity`](@ref).
 """
 struct PointVertex
     position::Vec3f
-    intensity::Float32
     rgba::RGBA8
+    intensity::UInt16
     classification::UInt8
     flags::UInt8
-    _pad::UInt16
 end
-PointVertex(p, intensity=0f0, rgba::RGBA8=(0xff, 0xff, 0xff, 0xff), class::Integer=0) =
-    PointVertex(Vec3f(p), Float32(intensity), rgba, UInt8(class), 0x00, 0x0000)
+PointVertex(p, intensity::Real=0f0, rgba::RGBA8=(0xff, 0xff, 0xff, 0xff), class::Integer=0) =
+    PointVertex(Vec3f(p), rgba, _u16(intensity), UInt8(class), 0x00)
+_u16(x::AbstractFloat) = round(UInt16, clamp(x, 0, 1) * 65535)
+_u16(x::Real) = _u16(Float64(x))
+
+"Intensity of a point as a Float32 in 0–1."
+intensity(v::PointVertex) = v.intensity / 65535f0
+with_position(v::PointVertex, p) = PointVertex(Vec3f(p), v.rgba, v.intensity, v.classification, v.flags)
+with_class(v::PointVertex, c::Integer) = PointVertex(v.position, v.rgba, v.intensity, UInt8(c), v.flags)
+with_flags(v::PointVertex, f::Integer) = PointVertex(v.position, v.rgba, v.intensity, v.classification, UInt8(f))
 
 "32-byte interleaved mesh vertex: position, normal, uv."
 struct MeshVertex
@@ -84,9 +94,10 @@ struct LineVertex
     color::Vec4f
 end
 
-@assert sizeof(PointVertex) == 24
-# every GPU attribute offset must be a multiple of 4 (see point_layout!)
-@assert all(fieldoffset(PointVertex, i) % 4 == 0 for i in (1, 2, 3, 4))
+@assert sizeof(PointVertex) == 20
+# GPU attributes start at position, rgba and intensity (class and flags ride in the
+# intensity attribute): those offsets must be multiples of 4 (see point_layout!)
+@assert all(fieldoffset(PointVertex, Base.fieldindex(PointVertex, f)) % 4 == 0 for f in (:position, :rgba, :intensity))
 @assert sizeof(MeshVertex) == 32
 @assert sizeof(LineVertex) == 40
 

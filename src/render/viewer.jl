@@ -437,7 +437,7 @@ end
 screenshot(path::AbstractString, scene::Scene; kwargs...) = write_png(path, render_offscreen(scene; kwargs...))
 
 # ---------------------------------------------------------------------------
-# Dependency-free PNG writer (zlib "stored" blocks: larger files, no codec)
+# PNG writer (zlib from Julia's own Zlib_jll; no image package)
 
 const _CRC_TABLE = let t = Vector{UInt32}(undef, 256)
     for n in 0:255
@@ -456,13 +456,6 @@ function _crc32(data)
     end
     return c ⊻ 0xffffffff
 end
-function _adler32(data)
-    a, b = UInt32(1), UInt32(0)
-    for x in data
-        a = (a + x) % 65521; b = (b + a) % 65521
-    end
-    return (b << 16) | a
-end
 
 """
     write_png(path, img::Matrix{NTuple{3,UInt8}}) -> path
@@ -472,23 +465,15 @@ function write_png(path::AbstractString, img::AbstractMatrix{NTuple{3, UInt8}})
     raw = Vector{UInt8}(undef, h * (1 + 3w))
     k = 0
     for y in 1:h
-        raw[k += 1] = 0x00                       # filter: none
-        for x in 1:w, c in img[y, x]
-            raw[k += 1] = c
+        # filter "Up" (byte minus the byte above) for all rows but the first:
+        # rendered images have large flat areas, which then compress well
+        raw[k += 1] = y == 1 ? 0x00 : 0x02
+        for x in 1:w, c in 1:3
+            v = img[y, x][c]
+            raw[k += 1] = y == 1 ? v : v - img[y-1, x][c]
         end
     end
-    z = IOBuffer()
-    write(z, 0x78, 0x01)
-    n = length(raw); i = 1
-    while i <= n
-        len = min(65535, n - i + 1)
-        last = i + len > n
-        write(z, UInt8(last), htol(UInt16(len)), htol(~UInt16(len)))
-        write(z, view(raw, i:i+len-1))
-        i += len
-    end
-    write(z, hton(_adler32(raw)))
-    idat = take!(z)
+    idat = zlib_compress(raw; level=6)
     chunk(io, typ, data) = (write(io, hton(UInt32(length(data)))); td = vcat(Vector{UInt8}(typ), data);
                             write(io, td); write(io, hton(_crc32(td))))
     open(path, "w") do io

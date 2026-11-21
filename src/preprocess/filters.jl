@@ -51,8 +51,6 @@ function keep_mask(p::FilterPipeline, pc::PointCloud)
     return mask
 end
 
-_kdtree(pc::PointCloud) = KDTree([v.position for v in pc.vertices]; leafsize=16)
-
 # ---------------------------------------------------------------------------
 
 """
@@ -72,12 +70,30 @@ keep_mask(f::StatisticalOutlierFilter, pc::PointCloud) = statistical_outlier_mas
 function statistical_outlier_mask(pc::PointCloud; k::Int=8, nsigma::Real=2.0)
     n = length(pc)
     n <= k && return trues(n)
-    pts = [v.position for v in pc.vertices]
-    tree = KDTree(pts; leafsize=16)
-    idxs, dists = knn(tree, pts, k + 1)   # +1: the point itself
-    md = [sum(d) / k for d in dists]      # self-distance is 0
-    μ, σ = mean(md), std(md)
+    g = GridNeighbors(Positions(pc.vertices))
+    md = _mean_knn_distance(g, pc.vertices, k)        # 4 bytes per point
+    μ = mean(md); σ = std(md; mean=μ)
     return md .<= μ + nsigma * σ
+end
+
+function _mean_knn_distance(g::GridNeighbors, verts::Vector{PointVertex}, k::Int)
+    md = Vector{Float32}(undef, length(verts))
+    threaded_chunks(_mean_knn_kernel!, length(verts), md, g, verts, k)
+    return md
+end
+
+function _mean_knn_kernel!(range, md, g, verts, k)
+    h = KHeap(k)                                     # one small heap per chunk
+    # knn! is @inline: as a separate call, Julia 1.12 boxed its arguments
+    # (~130 B per point) whenever this kernel ran in spawned tasks
+    for i in range
+        knn!(h, g, verts[i].position, i)
+        acc = 0f0
+        for j in 1:h.n
+            acc += sqrt(h.d[j])
+        end
+        md[i] = acc / k
+    end
 end
 
 """
@@ -92,13 +108,21 @@ end
 keep_mask(f::RadiusOutlierFilter, pc::PointCloud) = radius_outlier_mask(pc; f.radius, f.min_neighbors)
 
 function radius_outlier_mask(pc::PointCloud; radius::Real, min_neighbors::Int=4)
-    pts = [v.position for v in pc.vertices]
-    tree = KDTree(pts; leafsize=16)
-    mask = falses(length(pts))
-    Threads.@threads for i in eachindex(pts)
-        mask[i] = length(inrange(tree, pts[i], radius)) - 1 >= min_neighbors
+    g = GridNeighbors(Positions(pc.vertices), Float32(radius))
+    return BitVector(_radius_keep(g, pc.vertices, Float32(radius), min_neighbors))
+end
+
+# Vector{Bool}, not BitVector: threads writing neighbouring bits of one word would race.
+function _radius_keep(g::GridNeighbors, verts::Vector{PointVertex}, r::Float32, m::Int)
+    keep = Vector{Bool}(undef, length(verts))
+    threaded_chunks(_radius_kernel!, length(verts), keep, g, verts, r, m)
+    return keep
+end
+
+function _radius_kernel!(range, keep, g, verts, r, m)
+    @inbounds for i in range
+        keep[i] = count_within(g, verts[i].position, r, i, m) >= m
     end
-    return mask
 end
 
 """
@@ -114,17 +138,19 @@ keep_mask(f::VoxelDownsample, pc::PointCloud) = voxel_downsample(pc, f.voxel)
 
 function voxel_downsample(pc::PointCloud, voxel::Real)
     voxel > 0 || throw(ArgumentError("voxel size must be positive"))
-    inv = 1 / voxel
-    best = Dict{NTuple{3, Int32}, Tuple{Int, Float32}}()
+    inv = Float32(1 / voxel)
+    # one packed key per occupied voxel → index of the point nearest its centre
+    best = Dict{UInt64, Int32}()
+    dist(i, q) = sum(abs2, pc.vertices[i].position .* inv .- (Vec3f(q) .+ 0.5f0))
     for (i, v) in enumerate(pc.vertices)
-        q = v.position .* Float32(inv)
-        key = (floor(Int32, q[1]), floor(Int32, q[2]), floor(Int32, q[3]))
-        d = sum(abs2, q .- (Vec3f(key...) .+ 0.5f0))
-        cur = get(best, key, (0, Inf32))
-        d < cur[2] && (best[key] = (i, d))
+        q = floor.(Int32, v.position .* inv)
+        key = (UInt64(reinterpret(UInt32, q[1]) & 0x1fffff) << 42) |
+              (UInt64(reinterpret(UInt32, q[2]) & 0x1fffff) << 21) | UInt64(reinterpret(UInt32, q[3]) & 0x1fffff)
+        j = get(best, key, Int32(0))
+        (j == 0 || dist(i, q) < dist(j, q)) && (best[key] = Int32(i))
     end
     mask = falses(length(pc))
-    for (i, _) in values(best)
+    for i in values(best)
         mask[i] = true
     end
     return mask
@@ -162,7 +188,7 @@ function apply_filter(f::GroundPlaneFilter, pc::PointCloud)
     out = subset(pc, trues(length(pc)))
     for i in findall(g)
         v = out.vertices[i]
-        out.vertices[i] = PointVertex(v.position, v.intensity, v.rgba, 0x02, v.flags, v._pad)
+        out.vertices[i] = with_class(v, 2)
     end
     return out
 end
@@ -262,6 +288,6 @@ function attribute_column(pc::PointCloud, a::Symbol)
     a === :x && return Float64[v.position[1] for v in pc.vertices]
     a === :y && return Float64[v.position[2] for v in pc.vertices]
     a === :z && return Float64[v.position[3] for v in pc.vertices]
-    a === :intensity && return Float64[v.intensity for v in pc.vertices]
+    a === :intensity && return Float64[intensity(v) for v in pc.vertices]
     throw(ArgumentError("unknown point attribute :$a (use :x, :y, :z or :intensity)"))
 end

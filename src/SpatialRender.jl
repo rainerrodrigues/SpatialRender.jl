@@ -30,15 +30,12 @@ using Printf
 using Random
 using Statistics
 using StaticArrays
-using StructArrays
-using NearestNeighbors
 import JSON3
 using ModernGL
 import GLFW
-using CodecZstd: ZstdCompressor, ZstdDecompressor
-using CodecLz4: LZ4FrameCompressor, LZ4FrameDecompressor
 
 # ---- core (no GPU) --------------------------------------------------------
+include("util/compression.jl")
 include("core/types.jl")
 include("camera/quaternion.jl")
 include("core/frames.jl")
@@ -54,6 +51,7 @@ include("ingest/geojson.jl")
 include("ingest/trajectory.jl")
 include("ingest/load.jl")
 
+include("index/neighbors.jl")          # before the filters, which use it
 include("preprocess/filters.jl")
 
 include("index/aabb.jl")
@@ -87,7 +85,7 @@ include("ros/player.jl")
 
 # geometry
 export Vec3f, Vec3d, Vec2f, Vec4f, Mat4f, AABB
-export PointVertex, MeshVertex, LineVertex
+export PointVertex, MeshVertex, LineVertex, intensity
 export PointCloud, TriMesh, LineLayer, Polyline, compute_normals!
 export Scene, add!, layers, bounds, ColorMode, COLOR_HEIGHT, COLOR_INTENSITY,
        COLOR_CLASSIFICATION, COLOR_RGB, COLOR_AGE

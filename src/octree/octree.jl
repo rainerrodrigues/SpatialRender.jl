@@ -50,7 +50,8 @@ function OctreeCloud(dir::AbstractString; name=basename(normpath(dir)), point_bu
                      min_node_pixels::Real=80, point_size::Real=2.0, color_mode=nothing,
                      adaptive_size::Bool=true)
     idx = JSON3.read(read(joinpath(dir, "octree.json"), String))
-    idx.version == OCTREE_VERSION || error("unsupported octree version $(idx.version)")
+    idx.version == OCTREE_VERSION || error("$dir was built by an older SpatialRender (octree format $(idx.version), " *
+        "this version reads $OCTREE_VERSION); rebuild it with build_octree")
     v3(x) = Vec3f(x[1], x[2], x[3])
     byname = Dict{String, Int}(String(nd.name) => i for (i, nd) in enumerate(idx.nodes))
     nodes = [OctreeNode(String(nd.name), nd.depth, AABB(v3(nd.lo), v3(nd.hi)), nd.offset, nd.count,

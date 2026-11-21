@@ -88,13 +88,13 @@ function load_las(path::AbstractString; frame::Union{Nothing, LocalFrame}=nothin
     base = h.offset_to_points
     length(data) >= base + rl * h.npoints || error("truncated LAS file: header promises $(h.npoints) points")
 
-    sel = collect(1:stride:h.npoints)
+    sel = 1:stride:h.npoints                 # lazy range: no per-point index array
     if classes !== nothing
         cset = Set{UInt8}(UInt8.(classes))
         mask = cls_off == 15 ?
             [(data[base+(i-1)*rl+cls_off+1] & 0x1f) in cset for i in sel] :
             [data[base+(i-1)*rl+cls_off+1] in cset for i in sel]
-        sel = sel[mask]
+        sel = Int32[i for (i, keep) in zip(sel, mask) if keep]
     end
     n = length(sel)
 
@@ -198,7 +198,7 @@ function save_las(path::AbstractString, pc::PointCloud; frame::LocalFrame=Identi
         write(io, hi[1], lo[1], hi[2], lo[2], hi[3], lo[3])
         for (i, v) in enumerate(pc.vertices)
             q = round.(Int32, (world[i] - off) / s)
-            write(io, q[1], q[2], q[3], round(UInt16, clamp(v.intensity, 0, 1) * 65535),
+            write(io, q[1], q[2], q[3], v.intensity,
                   UInt8(0b00001001), v.classification & 0x1f, Int8(0), UInt8(0), UInt16(0))
             fmt == 3 && write(io, pc.gps_time[i])
             write(io, UInt16(v.rgba[1]) << 8, UInt16(v.rgba[2]) << 8, UInt16(v.rgba[3]) << 8)

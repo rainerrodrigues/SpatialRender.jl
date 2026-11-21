@@ -81,7 +81,7 @@ function push_scan!(s::StreamingPointCloud, pts::AbstractVector; pose=nothing,
             v = _as_vertex(pts[k], k, intensity, classification)
             p = M === IDENTITY4 ? v.position : transform_point(M, v.position)
             box = union(box, p)
-            s.buffer[head+1] = PointVertex(p, v.intensity, v.rgba, v.classification, flag, 0x0000)
+            s.buffer[head+1] = PointVertex(p, v.rgba, v.intensity, v.classification, flag)
             head = head + 1 == cap ? 0 : head + 1
         end
         m = n - skip

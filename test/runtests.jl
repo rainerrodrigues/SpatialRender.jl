@@ -33,15 +33,19 @@ brute_ray(m, r) = minimum((SpatialRender._moller_trumbore(r, a, b - a, c - a) fo
 @testset "SpatialRender" begin
 
 @testset "vertex layouts" begin
-    @test isbitstype(PointVertex) && sizeof(PointVertex) == 24
-    @test fieldoffset(PointVertex, 3) == 16 && fieldoffset(PointVertex, 4) == 20
+    @test isbitstype(PointVertex) && sizeof(PointVertex) == 20
+    @test fieldoffset(PointVertex, 2) == 12 && fieldoffset(PointVertex, 3) == 16
+    @test intensity(PointVertex(Vec3f(0, 0, 0), 0.5)) ≈ 0.5 atol = 1e-4
     @test sizeof(MeshVertex) == 32 && sizeof(LineVertex) == 40
     # D3D12-backed GL (Mesa on WSL) converts vertex buffers on the CPU, per
     # draw, when an attribute offset is not 4-byte aligned: keep them aligned
-    for T in (PointVertex, MeshVertex, LineVertex, SpatialRender.LabelSegment)
+    for T in (MeshVertex, LineVertex, SpatialRender.LabelSegment)
         @test all(fieldoffset(T, i) % 4 == 0 for i in 1:fieldcount(T) if sizeof(fieldtype(T, i)) >= 4 || i == 1)
         @test sizeof(T) % 4 == 0
     end
+    # PointVertex attributes: position, rgba, and the packed (intensity, class, flags) word
+    @test all(fieldoffset(PointVertex, Base.fieldindex(PointVertex, f)) % 4 == 0 for f in (:position, :rgba, :intensity))
+    @test sizeof(PointVertex) % 4 == 0
 end
 
 @testset "frames" begin
@@ -190,6 +194,22 @@ end
     @test count(.!sor[end-19:end]) == 20                 # all sparse outliers removed
     @test count(sor[1:end-20]) > 0.95 * (length(pc) - 20)
 
+    # grid k-NN against brute force: dense and sparse grids, plus a far isolated
+    # point that forces the all-cells fallback
+    far = vcat(plane[1:3000], [Vec3f(500, 500, 500)])
+    for (pts, h, dense) in ((plane[1:3000], nothing, true),     # compact cloud → dense cell table
+                            (far, nothing, false),               # huge box → sparse table
+                            (far, 0.05f0, false))
+        g = SpatialRender.GridNeighbors(pts, h)
+        hp = SpatialRender.KHeap(5)
+        for i in (1, 17, 2999, length(pts))
+            SpatialRender.knn!(hp, g, pts[i], i)
+            got = sort(sqrt.(hp.d[1:hp.n]))
+            want = sort([norm(pts[j] - pts[i]) for j in eachindex(pts) if j != i])[1:5]
+            @test got ≈ want
+        end
+        @test isempty(g.starts) == !dense
+    end
     rad = keep_mask(RadiusOutlierFilter(radius=1.0, min_neighbors=3), pc)
     @test !any(rad[end-19:end])
 
@@ -548,6 +568,13 @@ end
         @test f.channels[b].metadata["k"] == "v"
     end
     @test_throws ErrorException open_mcap(save_stl(tmp("notmcap.stl"), random_mesh(Xoshiro(1), 2)))
+    # codecs on multi-megabyte data (LZ4 frames hold many blocks), and corrupt input
+    big = vcat(rand(Xoshiro(3), UInt8, 1_500_000), repeat(UInt8[1, 2, 3, 4], 500_000))
+    @test SpatialRender.zstd_decompress(SpatialRender.zstd_compress(big), length(big)) == big
+    @test SpatialRender.lz4_decompress(SpatialRender.lz4_compress(big), length(big)) == big
+    @test length(SpatialRender.zstd_compress(big)) < length(big)
+    @test_throws ErrorException SpatialRender.zstd_decompress(rand(Xoshiro(4), UInt8, 100), 1000)
+    @test_throws ErrorException SpatialRender.lz4_decompress(rand(Xoshiro(4), UInt8, 100), 1000)
     # a rosbag2 directory resolves to its .mcap file
     mkpath(tmp("bagdir")); cp(tmp("t_zstd.mcap"), tmp("bagdir/bagdir_0.mcap"); force=true)
     write(tmp("bagdir/metadata.yaml"), "rosbag2_bagfile_information: {}\n")
@@ -571,7 +598,7 @@ end
     cloud = [Vec3f(i, -i, 0.5i) for i in 1:100]
     st, frame, v = decode_pointcloud2(encode_pointcloud2(99, "lidar", cloud; intensity=fill(127.5, 100), ring=[i % 16 for i in 1:100]))
     @test st == 99 && frame == "lidar" && length(v) == 100
-    @test v[10].position == Vec3f(10, -10, 5) && v[10].intensity ≈ 0.5 && v[10].classification == 10
+    @test v[10].position == Vec3f(10, -10, 5) && isapprox(intensity(v[10]), 0.5; atol=1e-4) && v[10].classification == 10
     # a different layout: float64 x/y/z, uint8 intensity, packed rgb, a NaN point
     w = SpatialRender.CDRWriter(); SpatialRender.cdr_header!(w, 1, "cam")
     SpatialRender.cdr!(w, UInt32(1)); SpatialRender.cdr!(w, UInt32(3))
@@ -588,7 +615,7 @@ end
     _, _, v2 = decode_pointcloud2(SpatialRender.cdr_bytes(w))
     @test length(v2) == 2                                            # NaN dropped
     @test v2[1].rgba == (0xff, 0x00, 0x00, 0xff) && v2[2].rgba == (0x00, 0x00, 0xff, 0xff)
-    @test v2[2].intensity == 1f0 && v2[2].position == Vec3f(3, 2, 3)
+    @test intensity(v2[2]) == 1f0 && v2[2].position == Vec3f(3, 2, 3)
     @test_throws ErrorException decode_tf(UInt8[0x00, 0x00, 0x00, 0x00, 0x01])   # big-endian
 end
 
@@ -662,9 +689,39 @@ end
     @test length(q.scene.layers) == 1 && q.fixed_frame == "base_link"
 end
 
+# Minimal PNG reader for the tests: chunks → inflate (zlib) → undo "Up"/none filters.
+function read_png(path)
+    b = read(path)
+    @assert b[1:8] == UInt8[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+    pos = 9; w = h = 0; idat = UInt8[]
+    while pos < length(b)
+        len = Int(ntoh(reinterpret(UInt32, b[pos:pos+3])[1])); typ = String(b[pos+4:pos+7])
+        data = b[pos+8:pos+7+len]
+        typ == "IHDR" && (w = Int(ntoh(reinterpret(UInt32, data[1:4])[1])); h = Int(ntoh(reinterpret(UInt32, data[5:8])[1])))
+        typ == "IDAT" && append!(idat, data)
+        @assert SpatialRender._crc32(b[pos+4:pos+7+len]) == ntoh(reinterpret(UInt32, b[pos+8+len:pos+11+len])[1])
+        pos += 12 + len
+    end
+    raw = Vector{UInt8}(undef, h * (1 + 3w)); n = Ref{Culong}(length(raw))
+    rc = ccall((:uncompress, SpatialRender.libz), Cint, (Ptr{UInt8}, Ref{Culong}, Ptr{UInt8}, Culong), raw, n, idat, length(idat))
+    @assert rc == 0 && n[] == length(raw)
+    img = Matrix{NTuple{3, UInt8}}(undef, h, w)
+    for y in 1:h
+        f = raw[(y - 1) * (1 + 3w) + 1]
+        for x in 1:w
+            px = ntuple(c -> raw[(y - 1) * (1 + 3w) + 1 + 3(x - 1) + c], 3)
+            img[y, x] = f == 0x02 ? px .+ img[y-1, x] : px
+        end
+    end
+    return img
+end
+
 @testset "PNG writer" begin
     img = [(UInt8(x), UInt8(y), 0x80) for y in 1:3, x in 1:4]
     write_png(tmp("t.png"), img)
+    @test read_png(tmp("t.png")) == img
+    noise = [(rand(UInt8), rand(UInt8), rand(UInt8)) for _ in 1:37, _ in 1:53]
+    @test read_png(write_png(tmp("n.png"), noise)) == noise
     b = read(tmp("t.png"))
     @test b[1:8] == UInt8[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
     @test ntoh(reinterpret(UInt32, b[17:20])[1]) == 4      # width
@@ -710,8 +767,10 @@ end
         before = compile_cache_stats()
         render_offscreen(scene; width=64, height=64)
         @test compile_cache_stats().misses == before.misses + length(SpatialRender.ALL_SHADERS)   # new context → recompiled
-        screenshot(tmp("s.png"), scene; width=128, height=96)
-        @test filesize(tmp("s.png")) > 128 * 96 * 3
+        img_s = render_offscreen(scene; width=128, height=96)
+        write_png(tmp("s.png"), img_s)
+        @test read_png(tmp("s.png")) == img_s                     # lossless round trip of a real render
+        @test filesize(tmp("s.png")) < 128 * 96 * 3               # and actually compressed
 
         # poses, streams and re-upload after touch!
         s2 = Scene()

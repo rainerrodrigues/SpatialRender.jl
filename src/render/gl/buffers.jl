@@ -53,13 +53,13 @@ end
 function point_layout!()
     T = PointVertex
     _float_attr(0, 3, T, :position)
-    _float_attr(1, 1, T, :intensity)
     _float_attr(2, 4, T, :rgba; type=GL_UNSIGNED_BYTE, normalized=GL_TRUE)
-    # classification, flags and padding as one 4-byte integer attribute: every
-    # attribute offset stays 4-byte aligned, which D3D12-backed drivers require
-    # to use the buffer directly (unaligned offsets trigger per-draw conversion)
+    # intensity (2 bytes), classification and flags as one 4-byte integer
+    # attribute: every offset stays 4-byte aligned, which D3D12-backed drivers
+    # require to use the buffer directly (unaligned offsets trigger per-draw
+    # conversion on the CPU)
     glEnableVertexAttribArray(3)
-    glVertexAttribIPointer(3, 4, GL_UNSIGNED_BYTE, sizeof(T), _off(T, :classification))
+    glVertexAttribIPointer(3, 4, GL_UNSIGNED_BYTE, sizeof(T), _off(T, :intensity))
 end
 
 "Attribute layout of [`MeshVertex`](@ref) (locations 0–2)."
