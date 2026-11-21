@@ -249,3 +249,7 @@ The GPU tests (shader validation, offscreen rendering, EDL, poses, re-upload
 on `touch!`, octree streaming) run when an OpenGL 4.1 context can be created
 and are skipped otherwise. CI runs them under Xvfb with Mesa on Julia 1.10
 and the current release.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
