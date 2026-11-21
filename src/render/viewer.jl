@@ -74,6 +74,8 @@ mutable struct Viewer
     measuring::Bool                         # measure mode (R)
     pending::Union{Nothing, Vec3f}          # first point of a measurement in progress
     annotations::Union{Nothing, Annotations}
+    player::Any                             # a BagPlayer (or nothing), ticked every frame
+    fps::Float64                            # smoothed frame rate for the overlay
 end
 
 const KEYMAP = Dict(GLFW.KEY_W => :w, GLFW.KEY_A => :a, GLFW.KEY_S => :s, GLFW.KEY_D => :d,
@@ -91,7 +93,9 @@ SpatialRender controls
   1 height  2 intensity  3 classification  4 RGB  5 scan age   (point colors)
   + / -  point size    P  pixel / world point size    L  LOD on/off
   M  mesh wireframe    G  grid    B  eye-dome lighting    H  help
-  R  measure mode: click two points for distance, Δz and slope; Backspace undoes    S-shot: F12    Esc  close
+  R  measure mode: click two points for distance, Δz and slope; Backspace undoes
+  I  status overlay    F12  screenshot    Esc  close
+  bag replay:  Space play/pause   <- ->  seek 1 s (shift 10 s)   [ ]  slower/faster   Home  restart
 """
 
 """
@@ -105,7 +109,7 @@ it, e.g. from a robot's own update loop.
 function open_viewer(scene::Scene; width::Integer=1280, height::Integer=800,
                      title::AbstractString="SpatialRender", block::Bool=true,
                      camera::Union{Nothing, Camera}=nothing, settings::RenderSettings=RenderSettings(),
-                     vsync::Bool=true)
+                     vsync::Bool=true, player=nothing)
     _window_hints()
     win = GLFW.CreateWindow(width, height, title)
     ctx = _make_current(win)
@@ -118,7 +122,7 @@ function open_viewer(scene::Scene; width::Integer=1280, height::Integer=800,
     ctl = CameraController(cam)
     fw, fh = GLFW.GetFramebufferSize(win)
     set_viewport!(ctl, fw, fh)
-    v = Viewer(win, r, ctl, ctx, NO_HIT, true, false, nothing, nothing)
+    v = Viewer(win, r, ctl, ctx, NO_HIT, true, false, nothing, nothing, player, 0.0)
     _install_callbacks!(v)
     block || return v
     run!(v)
@@ -206,6 +210,11 @@ function _on_key(v::Viewer, key, action)
         undo!(v.annotations)
     elseif key == GLFW.KEY_H
         print(HELP)
+    elseif key == GLFW.KEY_I
+        s.hud = !s.hud
+    elseif v.player !== nothing && key in (GLFW.KEY_SPACE, GLFW.KEY_LEFT, GLFW.KEY_RIGHT,
+                                           GLFW.KEY_LEFT_BRACKET, GLFW.KEY_RIGHT_BRACKET, GLFW.KEY_HOME)
+        _player_key!(v.player, key, :shift in ctl.input.held)
     elseif key == GLFW.KEY_F12
         path = "spatialrender_$(round(Int, time())).png"
         fw, fh = GLFW.GetFramebufferSize(v.window)
@@ -237,6 +246,21 @@ function pick!(v::Viewer, x::Real, y::Real; set_pivot::Bool=false)
     v.renderer.settings.highlight = hit.layer isa PointCloud ? (hit.layer, hit.index) : (nothing, 0)
     set_pivot && set_pivot!(ctl, p)
     return hit
+end
+
+function _player_key!(p, key, shift)
+    if key == GLFW.KEY_SPACE
+        toggle!(p)
+    elseif key == GLFW.KEY_LEFT || key == GLFW.KEY_RIGHT
+        step = (shift ? 10.0 : 1.0) * (key == GLFW.KEY_LEFT ? -1 : 1)
+        seek!(p, current_time(p) + step)
+    elseif key == GLFW.KEY_LEFT_BRACKET
+        p.rate = max(p.rate / 2, 1 / 64)
+    elseif key == GLFW.KEY_RIGHT_BRACKET
+        p.rate = min(p.rate * 2, 64.0)
+    elseif key == GLFW.KEY_HOME
+        seek!(p, p.t0)
+    end
 end
 
 "The viewer's annotation layer, created on first use."
@@ -288,6 +312,7 @@ function step!(v::Viewer)
     now = time()
     dt = min(now - _last_time(v, now), 0.1)
     update!(v.controller, dt)
+    v.player === nothing || tick!(v.player, dt)
     fw, fh = GLFW.GetFramebufferSize(v.window)
     st = render_frame!(v.renderer, v.controller.camera, fw, fh)
     GLFW.SwapBuffers(v.window)
@@ -307,12 +332,17 @@ end
 
 const _TITLE_T = Ref(0.0)
 function _title!(v::Viewer, st, dt)
+    v.fps = v.fps == 0 ? 1 / max(dt, 1e-6) : 0.9 * v.fps + 0.1 / max(dt, 1e-6)
     t = time()
-    t - _TITLE_T[] < 0.5 && return
+    t - _TITLE_T[] < 0.25 && return                  # overlay text 4× per second
     _TITLE_T[] = t
     mode = v.controller.mode == OrbitMode ? "orbit" : "fly"
-    GLFW.SetWindowTitle(v.window, @sprintf("SpatialRender  |  %s  |  %.0f fps  |  %s pts  %s tris  %s segs",
-        mode, 1 / max(dt, 1e-6), _si(st.points), _si(st.triangles), _si(st.segments)))
+    stats = @sprintf("%s  %.0f fps  %s pts  %s tris  %s segs%s", mode, v.fps, _si(st.points),
+                     _si(st.triangles), _si(st.segments), v.measuring ? "  [measure]" : "")
+    lines = String[stats]
+    v.player === nothing || push!(lines, status(v.player))
+    v.renderer.hud = lines
+    GLFW.SetWindowTitle(v.window, "SpatialRender  |  " * stats)
 end
 _si(n) = n >= 1_000_000 ? @sprintf("%.1fM", n / 1e6) : n >= 1000 ? @sprintf("%.1fk", n / 1e3) : string(n)
 

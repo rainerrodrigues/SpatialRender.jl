@@ -23,6 +23,8 @@ mutable struct Renderer
     edl_program::GLProgram
     edl::Any                  # Nothing or EDLTarget, created at first use
     labels::GLProgram
+    hud::Vector{String}       # status lines drawn bottom-left (set by the viewer)
+    hud_gpu::Any              # GPUHud, created on first use
 end
 
 "Offscreen color + depth textures the opaque passes render into for EDL."
@@ -78,7 +80,7 @@ function Renderer(scene::Scene; settings::RenderSettings=RenderSettings())
                  GLProgram(LINE_SHADER), IdDict{Layer, GPULayer}(),
                  GLBuffer(GL_ARRAY_BUFFER, QUAD_CORNERS), -1, nothing,
                  (points=0, triangles=0, segments=0), AABB(), IdDict{Layer, Int}(),
-                 GLProgram(EDL_SHADER), nothing, GLProgram(LABEL_SHADER))
+                 GLProgram(EDL_SHADER), nothing, GLProgram(LABEL_SHADER), String[], nothing)
     glUseProgram(r.points.id)
     setuniform(r.points, :u_class_colors, CLASS_COLORS)
     sync!(r)
@@ -202,6 +204,7 @@ function _render_frame!(r::Renderer, cam::Camera, w::Integer, h::Integer)
     for l in r.scene.layers
         l isa Annotations && l.visible && _draw_annotations!(r, r.gpu[l], l, fc)
     end
+    s.hud && !isempty(r.hud) && _draw_hud!(r, fc)
     glEnable(GL_DEPTH_TEST)
     glDisable(GL_BLEND)
     glBindVertexArray(0)
@@ -233,6 +236,24 @@ function _draw_annotations!(r::Renderer, g::GPUAnnotations, a::Annotations, fc::
     end
 end
 
+function _draw_hud!(r::Renderer, fc::FrameContext)
+    r.hud_gpu === nothing && (r.hud_gpu = GPUHud(r.corners))
+    g = r.hud_gpu
+    set_text!(g, r.hud)
+    g.count == 0 && return
+    p = r.labels
+    glUseProgram(p.id)
+    setuniform(p, :u_screen, 1)
+    setuniform(p, :u_viewport, fc.viewport)
+    setuniform(p, :u_halo_color, Vec4f(0, 0, 0, 0.6))
+    glBindVertexArray(g.vao)
+    for (halo, width) in ((1, 3.5f0), (0, 1.4f0))
+        setuniform(p, :u_halo, halo); setuniform(p, :u_width, width)
+        glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, g.count)
+    end
+    setuniform(p, :u_screen, 0)
+end
+
 function _edl_pass!(r::Renderer, cam::Camera)
     t = r.edl; p = r.edl_program; s = r.settings
     glUseProgram(p.id)
@@ -254,6 +275,9 @@ end
 _grid_box(r::Renderer) = r.grid === nothing || !r.settings.grid ? AABB() : r.grid[2].box
 
 function release!(r::Renderer)
+    if r.hud_gpu isa GPUHud
+        glDeleteVertexArrays(1, Ref(r.hud_gpu.vao)); release!(r.hud_gpu.instances); r.hud_gpu = nothing
+    end
     r.edl isa EDLTarget && (release!(r.edl); r.edl = nothing)
     foreach(release!, values(r.gpu)); empty!(r.gpu)
     r.grid === nothing || release!(r.grid[2])

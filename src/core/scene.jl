@@ -44,10 +44,13 @@ function Base.show(io::IO, ::MIME"text/plain", s::Scene)
     println(io, "Scene with ", length(s.layers), " layer", length(s.layers) == 1 ? "" : "s",
             " (frame: ", nameof(typeof(s.frame)), ")")
     for l in s.layers
-        print(io, "  ", rpad(nameof(typeof(l)), 11), rpad(l.name, 24))
+        print(io, "  ", rpad(nameof(typeof(l)), 20), rpad(l.name, 24))
         l isa PointCloud && print(io, length(l), " points")
         l isa TriMesh && print(io, ntriangles(l), " triangles")
         l isa LineLayer && print(io, length(l.polylines), " polylines")
+        l isa StreamingPointCloud && print(io, length(l), " of ", capacity(l), " points (streaming)")
+        l isa OctreeCloud && print(io, length(l), " points (out-of-core)")
+        l isa Annotations && print(io, length(l.labels), " labels, ", length(l.lines), " lines")
         println(io)
     end
 end

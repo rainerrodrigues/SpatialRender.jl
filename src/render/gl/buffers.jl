@@ -215,6 +215,53 @@ function label_segments(a::Annotations)
     return out
 end
 
+"HUD text lines (first line at the bottom) as screen-anchored segments."
+function hud_segments(lines::AbstractVector{<:AbstractString}; size=12f0, margin=10f0,
+                      color=Vec4f(0.92, 0.94, 0.97, 1))
+    out = LabelSegment[]
+    sc = Float32(size) / 6f0
+    for (i, text) in enumerate(lines)
+        isempty(text) && continue
+        anchor = Vec3f(margin, margin + (i - 1) * GLYPH_LINE * sc * 1.15f0, 0)
+        ext = text_extent(text) * sc
+        push!(out, LabelSegment(anchor, Vec2f(-2, 3sc), Vec2f(ext[1] - 2sc, 3sc), PLATE_COLOR, 6sc + 8))
+        for (p, q) in text_segments(text)
+            push!(out, LabelSegment(anchor, sc * p, sc * q, color))
+        end
+    end
+    return out
+end
+
+mutable struct GPUHud
+    vao::GLuint
+    instances::GLBuffer
+    count::Int
+    text::Vector{String}
+end
+
+function GPUHud(corners::GLBuffer)
+    vao = new_vao()
+    inst = GLBuffer(GL_ARRAY_BUFFER, [LabelSegment(Vec3f(0, 0, 0), Vec2f(0, 0), Vec2f(0, 0), Vec4f(0, 0, 0, 0))];
+                    usage=GL_DYNAMIC_DRAW)
+    T = LabelSegment
+    _float_attr(0, 3, T, :anchor; divisor=1); _float_attr(1, 2, T, :a; divisor=1)
+    _float_attr(2, 2, T, :b; divisor=1); _float_attr(3, 4, T, :color; divisor=1)
+    _float_attr(5, 1, T, :width; divisor=1)
+    glBindBuffer(GL_ARRAY_BUFFER, corners.id)
+    glEnableVertexAttribArray(4)
+    glVertexAttribPointer(4, 2, GL_FLOAT, GL_FALSE, sizeof(Vec2f), C_NULL)
+    glBindVertexArray(0)
+    GPUHud(vao, inst, 0, String[])
+end
+
+function set_text!(g::GPUHud, lines::Vector{String})
+    lines == g.text && return
+    g.text = copy(lines)
+    segs = hud_segments(lines)
+    g.count = length(segs)
+    isempty(segs) || update!(g.instances, segs)
+end
+
 function upload(a::Annotations, corners::GLBuffer)
     lines = upload(LineLayer(a.lines; width=a.width), corners)
     segs = label_segments(a)

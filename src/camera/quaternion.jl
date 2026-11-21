@@ -63,3 +63,22 @@ function Quat(R::SMatrix{3, 3})
         return normalize(Quat((R[2, 1] - R[1, 2]) / s, (R[1, 3] + R[3, 1]) / s, (R[2, 3] + R[3, 2]) / s, s / 4))
     end
 end
+
+"""
+    slerp(a, b, t) -> Quat
+
+Spherical linear interpolation between unit quaternions (shortest path).
+"""
+function slerp(a::Quat, b::Quat, t::Real)
+    d = a.w * b.w + a.x * b.x + a.y * b.y + a.z * b.z
+    if d < 0                                    # take the short way round
+        b = Quat(-b.w, -b.x, -b.y, -b.z); d = -d
+    end
+    if d > 0.9995                               # nearly parallel: lerp + renormalise
+        return normalize(Quat(a.w + t * (b.w - a.w), a.x + t * (b.x - a.x),
+                              a.y + t * (b.y - a.y), a.z + t * (b.z - a.z)))
+    end
+    θ = acos(clamp(d, -1, 1)); s = sin(θ)
+    wa, wb = sin((1 - t) * θ) / s, sin(t * θ) / s
+    return Quat(wa * a.w + wb * b.w, wa * a.x + wb * b.x, wa * a.y + wb * b.y, wa * a.z + wb * b.z)
+end

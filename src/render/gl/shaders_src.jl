@@ -288,15 +288,17 @@ uniform vec2 u_viewport;
 uniform float u_width;
 uniform int u_halo;                      // 1: draw a dark outline pass
 uniform vec4 u_halo_color;
+uniform int u_screen;                    // 1: anchor is in pixels from the bottom-left (HUD)
 
 out vec4 v_color;
 out float v_dist;
 out float v_half;
 
 void main() {
-    vec4 c = u_vp * (u_model * vec4(a_anchor, 1.0));
-    if (c.w <= 1e-5) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }   // behind the camera
     vec2 half_vp = 0.5 * u_viewport;
+    vec4 c = u_screen == 1 ? vec4((a_anchor.xy - half_vp) / half_vp, 0.0, 1.0)
+                           : u_vp * (u_model * vec4(a_anchor, 1.0));
+    if (c.w <= 1e-5) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }   // behind the camera
     vec2 d = a_b - a_a;
     float len = length(d);
     vec2 dir = len > 1e-6 ? d / len : vec2(1.0, 0.0);

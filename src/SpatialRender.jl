@@ -35,6 +35,8 @@ using NearestNeighbors
 import JSON3
 using ModernGL
 import GLFW
+using CodecZstd: ZstdCompressor, ZstdDecompressor
+using CodecLz4: LZ4FrameCompressor, LZ4FrameDecompressor
 
 # ---- core (no GPU) --------------------------------------------------------
 include("core/types.jl")
@@ -77,6 +79,12 @@ include("render/gl/renderer.jl")
 include("render/gpu_select.jl")
 include("render/viewer.jl")
 
+# ---- ROS 2 bag replay ----------------------------------------------------
+include("ros/mcap.jl")
+include("ros/cdr.jl")
+include("ros/tf.jl")
+include("ros/player.jl")
+
 # geometry
 export Vec3f, Vec3d, Vec2f, Vec4f, Mat4f, AABB
 export PointVertex, MeshVertex, LineVertex
@@ -88,6 +96,13 @@ export set_pose!, pose, pose_matrix, touch!, world_bounds, with_update_lock,
        StreamingPointCloud, push_scan!
 # out-of-core point clouds
 export build_octree, OctreeCloud
+# ROS 2 bags
+export open_mcap, MCAPFile, MCAPWriter, add_schema!, add_channel!, write_message!, message_data,
+       topics, time_range, FrameTree, add_transform!, lookup_transform, StampedTransform, Rigid,
+       open_bag, BagPlayer, play!, pause!, seek!, tick!, replay, current_time,
+       decode_pointcloud2, decode_tf, decode_odometry, decode_pose_stamped, decode_path, decode_navsatfix,
+       encode_pointcloud2, encode_tf, encode_odometry, encode_pose_stamped, encode_path, encode_navsatfix,
+       slerp
 # annotations
 export Label, Annotations, annotate!, measure!, undo!
 # frames

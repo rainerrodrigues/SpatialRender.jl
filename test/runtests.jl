@@ -522,6 +522,146 @@ end
     SpatialRender.GPU_CONFIGURED[] = false            # let the GL tests below configure normally
 end
 
+@testset "MCAP container" begin
+    using SpatialRender: schema_name
+    for comp in ("", "zstd", "lz4")
+        path = tmp("t_$comp.mcap")
+        w = MCAPWriter(path; compression=comp, chunk_size=256)      # tiny chunks → many of them
+        s1 = add_schema!(w, "std_msgs/msg/String"); s2 = add_schema!(w, "foo/msg/Bar", "ros2msg", UInt8[1, 2, 3])
+        a = add_channel!(w, "/a", s1); b = add_channel!(w, "/b", s2; metadata=Dict("k" => "v"))
+        payloads = Dict{Tuple{Int, Int}, Vector{UInt8}}()
+        for i in 1:200
+            ch = isodd(i) ? a : b
+            t = 1_000 * (201 - i)                                     # written newest first
+            d = rand(UInt8, rand(1:40)); payloads[(ch, t)] = d
+            write_message!(w, ch, t, d; sequence=i)
+        end
+        close(w)
+        f = open_mcap(path)
+        @test length(f.messages) == 200 && length(f.chunks) > 5
+        @test issorted([m.log_time for m in f.messages])                # index is time-sorted
+        @test time_range(f) == (1_000, 200_000)
+        @test all(message_data(f, m) == payloads[(m.channel, m.log_time)] for m in f.messages)
+        ts = topics(f)
+        @test [t.topic for t in ts] == ["/a", "/b"] && all(t.count == 100 for t in ts)
+        @test schema_name(f, b) == "foo/msg/Bar" && f.schemas[s2].data == UInt8[1, 2, 3]
+        @test f.channels[b].metadata["k"] == "v"
+    end
+    @test_throws ErrorException open_mcap(save_stl(tmp("notmcap.stl"), random_mesh(Xoshiro(1), 2)))
+    # a rosbag2 directory resolves to its .mcap file
+    mkpath(tmp("bagdir")); cp(tmp("t_zstd.mcap"), tmp("bagdir/bagdir_0.mcap"); force=true)
+    write(tmp("bagdir/metadata.yaml"), "rosbag2_bagfile_information: {}\n")
+    @test length(open_mcap(tmp("bagdir")).messages) == 200
+end
+
+@testset "ROS 2 CDR messages" begin
+    q = normalize(Quat(0.9, 0.1, -0.2, 0.3))
+    t = StampedTransform(1_700_000_000_123_456_789, "odom", "base_link", Vec3d(1.5, -2, 0.25), q)
+    tf = decode_tf(encode_tf([t, StampedTransform(5, "base_link", "lidar", Vec3d(0, 0, 1), Quat())]))
+    @test length(tf) == 2 && tf[1].stamp == t.stamp && tf[1].parent == "odom" && tf[1].child == "base_link"
+    @test tf[1].translation == t.translation && tf[1].rotation.w ≈ q.w && tf[2].child == "lidar"
+    o = decode_odometry(encode_odometry(t))
+    @test o.parent == "odom" && o.child == "base_link" && o.translation == t.translation && o.rotation.z ≈ q.z
+    ps = decode_pose_stamped(encode_pose_stamped(t))
+    @test ps.parent == "odom" && ps.translation == t.translation
+    st, frame, pts = decode_path(encode_path(42, "map", [Vec3d(i, 2i, 0) for i in 1:5]))
+    @test st == 42 && frame == "map" && pts[5] == Vec3d(5, 10, 0)
+    st, frame, status, lat, lon, alt = decode_navsatfix(encode_navsatfix(7, "gps", 47.1, 8.2, 410.5; status=-1))
+    @test (st, frame, status, lat, lon, alt) == (7, "gps", -1, 47.1, 8.2, 410.5)
+    cloud = [Vec3f(i, -i, 0.5i) for i in 1:100]
+    st, frame, v = decode_pointcloud2(encode_pointcloud2(99, "lidar", cloud; intensity=fill(127.5, 100), ring=[i % 16 for i in 1:100]))
+    @test st == 99 && frame == "lidar" && length(v) == 100
+    @test v[10].position == Vec3f(10, -10, 5) && v[10].intensity ≈ 0.5 && v[10].classification == 10
+    # a different layout: float64 x/y/z, uint8 intensity, packed rgb, a NaN point
+    w = SpatialRender.CDRWriter(); SpatialRender.cdr_header!(w, 1, "cam")
+    SpatialRender.cdr!(w, UInt32(1)); SpatialRender.cdr!(w, UInt32(3))
+    fields = (("x", 0, 8), ("y", 8, 8), ("z", 16, 8), ("intensity", 24, 2), ("rgb", 28, 7))
+    SpatialRender.cdr!(w, UInt32(length(fields)))
+    for (nm, off, dt) in fields
+        SpatialRender.cdr_string!(w, nm); SpatialRender.cdr!(w, UInt32(off)); SpatialRender.cdr!(w, UInt8(dt)); SpatialRender.cdr!(w, UInt32(1))
+    end
+    SpatialRender.cdr!(w, UInt8(0)); SpatialRender.cdr!(w, UInt32(32)); SpatialRender.cdr!(w, UInt32(96)); SpatialRender.cdr!(w, UInt32(96))
+    for (x, it, rgb) in ((1.0, 0x00, 0x00ff0000), (NaN, 0x10, 0x0000ff00), (3.0, 0xff, 0x000000ff))
+        write(w.io, x, 2.0, 3.0, it, UInt8[0, 0, 0], rgb)
+    end
+    SpatialRender.cdr!(w, UInt8(0))
+    _, _, v2 = decode_pointcloud2(SpatialRender.cdr_bytes(w))
+    @test length(v2) == 2                                            # NaN dropped
+    @test v2[1].rgba == (0xff, 0x00, 0x00, 0xff) && v2[2].rgba == (0x00, 0x00, 0xff, 0xff)
+    @test v2[2].intensity == 1f0 && v2[2].position == Vec3f(3, 2, 3)
+    @test_throws ErrorException decode_tf(UInt8[0x00, 0x00, 0x00, 0x00, 0x01])   # big-endian
+end
+
+@testset "TF frame tree" begin
+    tree = FrameTree()
+    add_transform!(tree, StampedTransform(0, "map", "odom", Vec3d(10, 0, 0), Quat(Vec3d(0, 0, 1), π / 2)))
+    for (k, x) in enumerate(0:4)                                     # base_link moves along odom x
+        add_transform!(tree, StampedTransform(Int64(k - 1) * 1_000_000_000, "odom", "base_link", Vec3d(x, 0, 0), Quat()))
+    end
+    add_transform!(tree, StampedTransform(0, "base_link", "lidar", Vec3d(0, 0, 1), Quat()); static=true)
+    SpatialRender.finalize!(tree)
+    T = lookup_transform(tree, "map", "lidar", 2_500_000_000)        # between samples: odom x = 2.5
+    @test T(Vec3d(0, 0, 0)) ≈ Vec3d(10, 2.5, 1) atol = 1e-9            # odom rotated 90° in map
+    @test lookup_transform(tree, "lidar", "map", 2_500_000_000)(T(Vec3d(1, 2, 3))) ≈ Vec3d(1, 2, 3) atol = 1e-9
+    @test lookup_transform(tree, "map", "lidar", -5)(Vec3d(0, 0, 0)) ≈ Vec3d(10, 0, 1) atol = 1e-9    # holds before start
+    @test lookup_transform(tree, "map", "nowhere", 0) === nothing
+    @test SpatialRender.default_fixed_frame(tree) == "map"
+    q = slerp(Quat(), Quat(Vec3d(0, 0, 1), π / 2), 0.5)
+    @test SpatialRender.rotation_matrix(q) * Vec3d(1, 0, 0) ≈ Vec3d(cos(π / 4), sin(π / 4), 0)
+end
+
+@testset "bag player" begin
+    using SpatialRender: status, current_time, StampedTransform
+    # 4 s bag: base_link moves +1 m/s along map x; a one-point cloud at the
+    # sensor origin every 0.1 s; odometry; a path; GNSS 1 m/s east
+    path = tmp("player.mcap")
+    w = MCAPWriter(path)
+    sid(n) = add_schema!(w, n)
+    c_tf = add_channel!(w, "/tf", sid("tf2_msgs/msg/TFMessage"))
+    c_pc = add_channel!(w, "/points", sid("sensor_msgs/msg/PointCloud2"))
+    c_od = add_channel!(w, "/odom", sid("nav_msgs/msg/Odometry"))
+    c_pa = add_channel!(w, "/plan", sid("nav_msgs/msg/Path"))
+    c_fx = add_channel!(w, "/fix", sid("sensor_msgs/msg/NavSatFix"))
+    enu = ENUFrame(47.0, 8.0)
+    for k in 0:40
+        t = k * 100_000_000
+        x = k / 10
+        write_message!(w, c_tf, t, encode_tf([StampedTransform(t, "map", "base_link", Vec3d(x, 0, 0), Quat())]))
+        write_message!(w, c_pc, t, encode_pointcloud2(t, "base_link", [Vec3f(0, 0, 0)]))
+        write_message!(w, c_od, t, encode_odometry(StampedTransform(t, "map", "base_link", Vec3d(x, 0, 0), Quat())))
+        k % 10 == 0 && write_message!(w, c_pa, t, encode_path(t, "map", [Vec3d(x, 0, 0), Vec3d(x + 5, 0, 0)]))
+        g = to_world(enu, Vec3d(x, 0, 0))
+        k % 5 == 0 && write_message!(w, c_fx, t, encode_navsatfix(t, "gps", g[2], g[1], 0.0))
+    end
+    close(w)
+    p = open_bag(path; history=1.0)
+    @test p.fixed_frame == "map" && SpatialRender.duration(p) ≈ 4.0
+    cloud = only(values(p.clouds))
+    @test length(cloud) == 1                                         # the t = 0 scan
+    seek!(p, 2.0)
+    xs = sort([cloud.buffer[i].position[1] for i in 1:length(cloud)])
+    @test xs ≈ collect(1.0:0.1:2.0) atol = 1e-5                       # last 1 s of scans, placed via TF
+    marker = only(tr.marker for tr in p.tracks)
+    @test pose(marker)[1, 4] ≈ 2.0 atol = 1e-5
+    plan = only(l for l in p.scene.layers if l.name == "/plan")
+    @test plan.polylines[1].points[1] ≈ Vec3f(2, 0, 0)
+    gnss = only(l for l in p.scene.layers if endswith(l.name, "(ENU)"))
+    @test gnss.polylines[1].points[1] ≈ Vec3f(0, 0, 0) atol = 1e-3    # anchored to the pose track
+    @test gnss.polylines[1].points[end][1] ≈ 4.0 atol = 0.05
+    play!(p); tick!(p, 0.55)                                         # wall seconds × rate 1
+    @test isapprox(current_time(p), 2.55; atol=1e-6) && length(cloud) == 11 + 5
+    p.rate = 4.0; tick!(p, 10.0)                                     # runs off the end: stops
+    @test current_time(p) ≈ 4.0 && !p.playing
+    seek!(p, 0.5)                                                    # backwards: rebuilt
+    @test sort([cloud.buffer[i].position[1] for i in 1:length(cloud)]) ≈ collect(0.0:0.1:0.5) atol = 1e-5
+    @test occursin("PAUSE", status(p)) && occursin("frame map", status(p))
+    p.loop = true; play!(p); seek!(p, 3.95); tick!(p, 1.0)
+    @test current_time(p) == 0.0                                      # wrapped
+    # topic filter and explicit fixed frame
+    q = open_bag(path; topics=["/points"], fixed_frame="base_link")
+    @test length(q.scene.layers) == 1 && q.fixed_frame == "base_link"
+end
+
 @testset "PNG writer" begin
     img = [(UInt8(x), UInt8(y), 0x80) for y in 1:3, x in 1:4]
     write_png(tmp("t.png"), img)
@@ -616,6 +756,24 @@ end
         annotate!(notes, Vec3f(-1.5, -1.5, 0), "HELLO"; color=Vec4f(1, 0, 0, 1), size=14)
         lab = render_offscreen(s3; width=96, height=96, camera=deepcopy(cam3), settings=RenderSettings(grid=false))
         @test count(p -> p[1] > 180 && p[2] < 90, lab) > 20       # red text visible over the points
+
+        # HUD overlay: status lines drawn bottom-left over the scene
+        SpatialRender.with_hidden_context() do
+            fbo = Ref{SpatialRender.GLuint}(0); SpatialRender.glGenFramebuffers(1, fbo)
+            SpatialRender.glBindFramebuffer(SpatialRender.GL_FRAMEBUFFER, fbo[])
+            rb = Ref{SpatialRender.GLuint}(0); SpatialRender.glGenRenderbuffers(1, rb)
+            SpatialRender.glBindRenderbuffer(SpatialRender.GL_RENDERBUFFER, rb[])
+            SpatialRender.glRenderbufferStorage(SpatialRender.GL_RENDERBUFFER, SpatialRender.GL_RGBA8, 320, 120)
+            SpatialRender.glFramebufferRenderbuffer(SpatialRender.GL_FRAMEBUFFER, SpatialRender.GL_COLOR_ATTACHMENT0,
+                                                    SpatialRender.GL_RENDERBUFFER, rb[])
+            r = Renderer(Scene(); settings=RenderSettings(grid=false))
+            render_frame!(r, Camera(), 320, 120); blank = SpatialRender.read_framebuffer(320, 120)
+            r.hud = ["PLAY 1.00 / 2.00 S", "ORBIT 60 FPS"]
+            render_frame!(r, Camera(), 320, 120); withhud = SpatialRender.read_framebuffer(320, 120)
+            bright(img) = count(p -> minimum(p) > 180, img)
+            @test bright(blank) == 0 && bright(withhud[61:end, 1:160]) > 30 && bright(withhud[1:60, :]) == 0
+            SpatialRender.release!(r)
+        end
 
         # out-of-core: offscreen render streams nodes until the view is complete
         s4 = Scene(); load!(s4, tmp("oct_pc"); point_budget=50_000)
