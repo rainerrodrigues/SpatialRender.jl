@@ -52,8 +52,8 @@ jobs:
         with:
           files: lcov.info
           token: ${{ secrets.CODECOV_TOKEN }}
-          # Fail loudly on main (where the secret is available); forks can't see it
-          fail_ci_if_error: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          # Fail loudly on main once the secret is configured; forks can't see it
+          fail_ci_if_error: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.CODECOV_TOKEN != '' }}
 
   benchmark:
     # Core pipeline throughput on synthetic data (no GPU). Reported in the job
