@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.1.0 (unreleased)
+## v0.1.0 (2026-11-22)
 
 First release.
 
@@ -90,6 +90,9 @@ os_lidar` lie on the dataset's registered map with a median of 4.3 cm (99.6 %
 within 10 cm), against 20 cm without `/tf_static`
 (`benchmark/realdata_tf_alignment.jl`). Also:
 
+- KaosCleaner is no longer a declared (weak) dependency: General refuses
+  unregistered dependencies, so `AttributeOutlierFilter` now finds a loaded
+  KaosCleaner at run time. Usage is unchanged (`using KaosCleaner`).
 - `MCAPFile` prints as one line inside collections and string interpolation
   (`println(bag)` used to print its raw chunk buffers), and its topic table
   sizes its columns to the longest topic and type name.

@@ -231,9 +231,10 @@ end
     @test length(out) < length(above) && length(out) > 2800
     @test count(keep_mask(pipe, pc)) == length(out)
 
-    if Base.find_package("KaosCleaner") === nothing
-        @test_throws ErrorException keep_mask(AttributeOutlierFilter(), pc)
+    if !haskey(Base.loaded_modules, SpatialRender.KAOSCLEANER)
+        @test_throws ErrorException keep_mask(AttributeOutlierFilter(), pc)   # engine not loaded: clear error
     end
+    @test_throws ArgumentError keep_mask(AttributeOutlierFilter(method="nope"), pc)
 end
 
 @testset "BVH ray casting" begin
