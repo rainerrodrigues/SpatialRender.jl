@@ -217,10 +217,10 @@ OpenGL), StaticArrays, JSON3 (GeoJSON and octree index), and the small
 | `GeometryBasics` + `FileIO` (+ `MeshIO`) | `TriMesh(::GeometryBasics.Mesh)`; `load_mesh` falls back to FileIO for PLY, OFF, … |
 | `GeoInterface` (e.g. via `GeoDataFrames`) | `gis_layer(df.geometry; frame = scene.frame)` for shapefiles, GeoPackage, any OGR source |
 
-¹ KaosCleaner (a Python package with a Julia engine) is not in Julia's General
-registry, so SpatialRender finds it at run time instead of declaring it as a
-package extension: install it with
-`Pkg.add(url = "https://github.com/rainerrodrigues/KaosCleaner")` and load it
+¹ KaosCleaner (a Python package with a Julia engine) is not yet in Julia's
+General registry, so SpatialRender finds it at run time instead of declaring
+it as a package extension: install it with
+`Pkg.add(url = "https://github.com/rainerrodrigues/KaosCleaner", subdir = "julia/KaosCleaner.jl")` and load it
 with `using KaosCleaner`.
 
 `GeometryBasics` also exports `Vec3f`; qualify it (`SpatialRender.Vec3f`)

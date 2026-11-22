@@ -275,7 +275,7 @@ follows a drifting signal: intensity spikes along a scan line).
 The statistics are computed by the `KaosCleaner` engine: `using KaosCleaner`
 enables this filter. KaosCleaner is not registered, so it is found at run time
 instead of being a declared dependency; install it with
-`Pkg.add(url = "https://github.com/rainerrodrigues/KaosCleaner")`.
+`Pkg.add(url = "https://github.com/rainerrodrigues/KaosCleaner", subdir = "julia/KaosCleaner.jl")`.
 """
 Base.@kwdef struct AttributeOutlierFilter <: PointFilter
     attributes::Vector{Symbol} = [:z, :intensity]
@@ -292,7 +292,7 @@ const OUTLIER_METHODS = ("zscore", "iqr", "mad", "hampel")
 function _kaoscleaner()
     m = get(Base.loaded_modules, KAOSCLEANER, nothing)
     m === nothing && error("AttributeOutlierFilter needs the KaosCleaner engine: run `using KaosCleaner` first ",
-                           "(install with `Pkg.add(url = \"https://github.com/rainerrodrigues/KaosCleaner\")`)")
+                           "(install with `Pkg.add(url = \"https://github.com/rainerrodrigues/KaosCleaner\", subdir = \"julia/KaosCleaner.jl\")`)")
     return m
 end
 
