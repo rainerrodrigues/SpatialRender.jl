@@ -29,3 +29,17 @@ First release.
 - WSL2: automatic selection of a hardware GPU through Mesa's d3d12 driver.
 - Extensions for GeometryBasics/FileIO meshes and GeoInterface geometries
   (GeoDataFrames).
+
+Hardening against real-world files (see *Tested against real-world data* in
+the README):
+
+- `open_mcap` reads split rosbag2 recordings (several `.mcap` files) as one
+  timeline, in `metadata.yaml` order, unifying channels across files.
+- `load_las` reads the complete records of a truncated file (with a warning)
+  instead of refusing it, and picks a local origin from the data when the
+  header bounding box is wrong.
+- `load_geojson` accepts features without a geometry, null geometries and
+  coordinates, `[x, y, null]` positions, files with a UTF-8 byte-order mark,
+  and files with no coordinates at all; invalid JSON gets a clear error.
+- `load_stl` / `load_obj` take `up = :y` for Y-up models.
+- PointCloud2 decoding is ~50× faster (a type instability in the per-point loop).

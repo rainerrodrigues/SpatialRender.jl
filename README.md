@@ -234,6 +234,23 @@ otherwise convert vertex buffers on the CPU for every draw: an unaligned
 1-byte attribute once made multi-range draws hang and lose the device.
 A test guards the layouts.
 
+## Tested against real-world data
+
+Besides the unit tests, the readers were checked against public test data:
+
+| Data | Source | Result |
+|---|---|---|
+| 416 MCAP files covering every combination of chunking, indexes, padding, repeated records and summary sections | Foxglove's MCAP conformance suite | all decode to the expected messages, channels and schemas |
+| rosbag2 recordings, including split bags of 3 and 5 files | the rosbag2 project's test resources | message counts match each bag's `metadata.yaml` |
+| 33 LAS files: versions 1.0–1.4, point formats 0–3, 6 and 7, extra bytes, many VLRs, deliberately broken files | PDAL's test data | identical to LasIO.jl on every point where LasIO can read the file (positions within 0.12 mm); the header bounds agree elsewhere |
+| ASCII and binary STL (the same parts in both encodings), OBJ with normals and UVs | three.js examples | both encodings give identical triangles |
+| 20 GeoJSON files with nulls, BOMs, collections and invalid JSON | GDAL's test data | geometry counts match an independent count |
+
+What the round found and fixed is listed in the CHANGELOG. Not yet checked
+against a real recording: `PointCloud2`, `Odometry` and `TF` messages from
+actual sensors (the bags above carry simple message types). A short bag from
+your own robot is the most useful next test.
+
 ## Limits
 
 - **STEP / IGES** are B-rep CAD, not meshes; tessellate them to STL/OBJ first

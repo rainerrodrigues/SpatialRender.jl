@@ -15,12 +15,18 @@ boundaries slightly above terrain). A feature property `"stroke"` holding a
 `#rrggbb` color overrides `color`.
 
 For shapefiles, GeoPackage and other OGR formats load `GeoDataFrames` and use
-`load_geodataframe` (a package extension).
+[`gis_layer`](@ref) (a package extension).
 """
 function load_geojson(path::AbstractString; frame::Union{Nothing, LocalFrame}=nothing,
                       color=DEFAULT_GIS_COLOR, width::Real=2.0, height::Real=0.0,
                       name=basename(path))
-    doc = JSON3.read(read(path, String))
+    text = read(path, String)
+    startswith(text, '\ufeff') && (text = text[nextind(text, 1):end])   # UTF-8 byte-order mark
+    doc = try
+        JSON3.read(text)
+    catch e
+        throw(ArgumentError("$path is not valid JSON: " * first(split(sprint(showerror, e), '\n'))))
+    end
     feats = _features(doc)
     if frame === nothing
         lo, hi = [Inf, Inf], [-Inf, -Inf]
@@ -29,12 +35,18 @@ function load_geojson(path::AbstractString; frame::Union{Nothing, LocalFrame}=no
                 lo .= min.(lo, (c[1], c[2])); hi .= max.(hi, (c[1], c[2]))
             end
         end
-        isfinite(lo[1]) || error("$path contains no coordinates")
-        frame = ENUFrame((lo[2] + hi[2]) / 2, (lo[1] + hi[1]) / 2, 0.0)
+        if isfinite(lo[1])
+            frame = ENUFrame((lo[2] + hi[2]) / 2, (lo[1] + hi[1]) / 2, 0.0)
+        else
+            @warn "$(basename(path)) has no coordinates (only null or empty geometries)"
+            frame = IdentityFrame()
+        end
     end
     lines = Polyline[]
     marks = Vec3f[]
-    tolocal(c) = to_local32(frame, (Float64(c[1]), Float64(c[2]), (length(c) > 2 ? Float64(c[3]) : 0.0) + height))
+    # height only when a third coordinate is present *and* numeric ([x, y, null] occurs)
+    tolocal(c) = to_local32(frame, (Float64(c[1]), Float64(c[2]),
+                                    (length(c) > 2 && c[3] isa Number ? Float64(c[3]) : 0.0) + height))
     for (geom, props) in feats
         col = _stroke(props, Vec4f(color))
         _collect!(lines, marks, geom, col, tolocal)
@@ -45,41 +57,60 @@ function load_geojson(path::AbstractString; frame::Union{Nothing, LocalFrame}=no
     return ll, pts, frame
 end
 
+# (geometry, properties) pairs; features without a geometry are skipped.
 function _features(doc)
+    doc isa JSON3.Object || return Tuple{Any, Any}[]
     t = get(doc, :type, nothing)
-    t == "FeatureCollection" && return [(f.geometry, get(f, :properties, nothing)) for f in doc.features if f.geometry !== nothing]
-    t == "Feature" && return [(doc.geometry, get(doc, :properties, nothing))]
+    if t == "FeatureCollection"
+        fs = get(doc, :features, nothing)
+        fs isa AbstractVector || return Tuple{Any, Any}[]
+        return [(g, get(f, :properties, nothing)) for f in fs
+                if f isa JSON3.Object && (g = get(f, :geometry, nothing)) isa JSON3.Object]
+    elseif t == "Feature"
+        g = get(doc, :geometry, nothing)
+        return g isa JSON3.Object ? [(g, get(doc, :properties, nothing))] : Tuple{Any, Any}[]
+    end
     return [(doc, nothing)]   # bare geometry
 end
 
 function _each_coord(f, geom)
-    t = geom.type
-    if t == "GeometryCollection"
-        foreach(g -> _each_coord(f, g), geom.geometries)
+    if get(geom, :type, nothing) == "GeometryCollection"
+        gs = get(geom, :geometries, nothing)
+        gs isa AbstractVector && foreach(g -> g isa JSON3.Object && _each_coord(f, g), gs)
     else
-        _walk(f, geom.coordinates)
+        _walk(f, get(geom, :coordinates, nothing))
     end
 end
-_walk(f, c) = c[1] isa Number ? f(c) : foreach(x -> _walk(f, x), c)
+# a position is an array of ≥ 2 numbers; anything else (null, [], junk) is skipped
+_walk(f, c) = c isa AbstractVector && !isempty(c) &&
+    (c[1] isa Number ? (length(c) >= 2 && c[2] isa Number && f(c)) : foreach(x -> _walk(f, x), c))
+
+_position(c) = c isa AbstractVector && length(c) >= 2 && c[1] isa Number && c[2] isa Number
+_positions(cs) = cs isa AbstractVector ? [c for c in cs if _position(c)] : Any[]
 
 function _collect!(lines, marks, geom, col, tl)
-    t = geom.type
-    C = t == "GeometryCollection" ? nothing : geom.coordinates
-    line(cs) = length(cs) >= 2 && push!(lines, Polyline([tl(c) for c in cs], col))
+    t = get(geom, :type, nothing)
+    if t == "GeometryCollection"
+        gs = get(geom, :geometries, nothing)
+        gs isa AbstractVector && foreach(g -> g isa JSON3.Object && _collect!(lines, marks, g, col, tl), gs)
+        return
+    end
+    C = get(geom, :coordinates, nothing)
+    C isa AbstractVector || return                     # null / missing coordinates
+    line(cs) = (ps = _positions(cs); length(ps) >= 2 && push!(lines, Polyline([tl(c) for c in ps], col)))
+    lists(x) = x isa AbstractVector ? x : Any[]
     if t == "Point"
-        push!(marks, tl(C))
+        _position(C) && push!(marks, tl(C))
     elseif t == "MultiPoint"
-        foreach(c -> push!(marks, tl(c)), C)
+        foreach(c -> push!(marks, tl(c)), _positions(C))
     elseif t == "LineString"
         line(C)
     elseif t == "MultiLineString" || t == "Polygon"
-        foreach(line, C)
+        foreach(line, lists(C))
     elseif t == "MultiPolygon"
-        foreach(poly -> foreach(line, poly), C)
-    elseif t == "GeometryCollection"
-        foreach(g -> _collect!(lines, marks, g, col, tl), geom.geometries)
+        foreach(poly -> foreach(line, lists(poly)), lists(C))
     else
-        @warn "skipping unsupported GeoJSON geometry $t"
+        @warn "skipping unsupported GeoJSON geometry $t" maxlog=1
     end
 end
 

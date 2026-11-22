@@ -717,6 +717,81 @@ function read_png(path)
     return img
 end
 
+@testset "real-world edge cases" begin
+    # --- LAS -------------------------------------------------------------------
+    pc = PointCloud([Vec3f(i, 2i, 0.5i) for i in 1:50]; intensity=fill(0.5, 50))
+    fr = OffsetFrame(600_000.0, 5_000_000.0, 100.0)
+    good = save_las(tmp("edge.las"), pc; frame=fr)
+    b = read(good)
+    # truncated (interrupted download): the complete records are read, with a warning
+    write(tmp("trunc.las"), b[1:end-26*10-5])
+    t, _ = @test_logs (:warn, r"holds 39 complete records") load_las(tmp("trunc.las"))
+    @test length(t) == 39
+    # header box wrong (zeros): origin comes from the first point, local coords stay small
+    bad = copy(b); bad[180:227] .= 0x00
+    write(tmp("badbox.las"), bad)
+    q, qf = @test_logs (:warn, r"does not contain the points") load_las(tmp("badbox.las"))
+    @test maximum(maximum(abs.(v.position)) for v in q.vertices) < 200
+    @test Vec3d(q.vertices[1].position) + qf.origin ≈ Vec3d(600_001, 5_000_002, 100.5) atol = 1e-3
+    # extra bytes after each standard record: the header record length is honoured
+    rl = Int(reinterpret(UInt16, b[106:107])[1]); n = 50; base = Int(reinterpret(UInt32, b[97:100])[1])
+    xb = vcat(b[1:base], reduce(vcat, [vcat(b[base+(i-1)*rl+1:base+i*rl], fill(0xee, 7)) for i in 1:n]))
+    xb[106:107] .= reinterpret(UInt8, [UInt16(rl + 7)])
+    write(tmp("extrabytes.las"), xb)
+    xpc, xfr = load_las(tmp("extrabytes.las"))
+    @test length(xpc) == n
+    @test Vec3d(xpc.vertices[end].position) + xfr.origin ≈ to_world(fr, Vec3d(50, 100, 25)) atol = 1e-3
+
+    # --- GeoJSON ---------------------------------------------------------------
+    write(tmp("nulls.geojson"), """{"type": "FeatureCollection", "features": [
+        {"type": "Feature", "properties": {}},
+        {"type": "Feature", "geometry": null},
+        {"type": "Feature", "geometry": {"type": "Point", "coordinates": null}},
+        {"type": "Feature", "geometry": {"type": "Point", "coordinates": [8.0, 47.0, null]}},
+        {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[8.0, 47.0], null]}},
+        {"type": "Feature", "geometry": {"type": "MultiPoint", "coordinates": [[8.0, 47.0], null, [8.001, 47.001]]}},
+        {"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [[[8, 47], [8.001, 47], [8, 47.001], [8, 47]], null]}},
+        {"type": "Feature", "geometry": {"type": "GeometryCollection", "geometries": [null, {"type": "LineString", "coordinates": [[8, 47], [8.002, 47]]}]}}
+    ]}""")
+    ll, pts, _ = load_geojson(tmp("nulls.geojson"))
+    @test length(ll.polylines) == 2 && length(pts) == 3
+    @test all(all(isfinite, v.position) for v in pts.vertices)
+    write(tmp("bom.geojson"), "\ufeff" * """{"type": "Point", "coordinates": [8.0, 47.0]}""")
+    @test length(load_geojson(tmp("bom.geojson"))[2]) == 1
+    write(tmp("allnull.geojson"), """{"type": "FeatureCollection", "features": [{"type": "Feature", "geometry": null}]}""")
+    e, ep, ef = @test_logs (:warn, r"no coordinates") load_geojson(tmp("allnull.geojson"))
+    @test isempty(e.polylines) && length(ep) == 0 && ef isa IdentityFrame
+    write(tmp("broken.geojson"), """{"type": "Point", "coordinates": [1, 2,],}""")
+    @test_throws ArgumentError load_geojson(tmp("broken.geojson"))
+
+    # --- meshes: Y-up models -----------------------------------------------------
+    write(tmp("yup.obj"), "v 0 0 0\nv 1 0 0\nv 0 2 0\nf 1 2 3\n")
+    @test bounds(load_obj(tmp("yup.obj"); up=:y)).hi ≈ Vec3f(1, 0, 2)       # +Y became +Z
+    @test bounds(load_obj(tmp("yup.obj"))).hi ≈ Vec3f(1, 2, 0)
+    @test_throws ArgumentError load_obj(tmp("yup.obj"); up=:x)
+
+    # --- split rosbag2 recording ---------------------------------------------------
+    bag = mkpath(tmp("splitbag"))
+    for (k, (file, t0)) in enumerate((("rec_1.mcap", 10), ("rec_0.mcap", 0)))   # written out of order
+        w = MCAPWriter(joinpath(bag, file))
+        k == 1 && add_schema!(w, "unused/msg/Pad")                                  # shifts ids in file 1
+        sid = add_schema!(w, "std_msgs/msg/String")
+        k == 1 && add_channel!(w, "/other", sid)
+        ch = add_channel!(w, "/chatter", sid)
+        for i in 0:4
+            write_message!(w, ch, (t0 + i) * 1_000_000_000, UInt8[k, i])
+        end
+        close(w)
+    end
+    write(joinpath(bag, "metadata.yaml"), "rosbag2_bagfile_information:\n  relative_file_paths:\n  - rec_0.mcap\n  - rec_1.mcap\n  message_count: 10\n")
+    f = open_mcap(bag)
+    @test length(f.files) == 2 && basename(f.files[1]) == "rec_0.mcap"
+    @test length(f.messages) == 10 && issorted([m.log_time for m in f.messages])
+    chatter = [t for t in topics(f) if t.topic == "/chatter"]
+    @test length(chatter) == 1 && chatter[1].count == 10                            # one channel across files
+    @test [message_data(f, m)[1] for m in f.messages] == [fill(0x02, 5); fill(0x01, 5)]   # payloads from the right file
+end
+
 @testset "Aqua quality checks" begin
     Aqua.test_all(SpatialRender)
 end

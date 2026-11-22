@@ -5,9 +5,12 @@
 
 Read a Wavefront OBJ. Polygons are fan-triangulated; each distinct
 `v/vt/vn` combination becomes one GPU vertex. Missing normals are computed.
+OBJ files from modelling tools are usually Y-up: pass `up=:y` to convert
+them to the scene's Z-up convention.
 """
 function load_obj(path::AbstractString; frame::LocalFrame=IdentityFrame(), scale::Real=1.0,
-                  name=basename(path), kwargs...)
+                  name=basename(path), up::Symbol=:z, kwargs...)
+    rot = _up_check(up) == :y ? y_up_to_z_up : identity
     P = Vec3f[]; N = Vec3f[]; T = Vec2f[]
     lut = Dict{NTuple{3, Int}, UInt32}()
     verts = MeshVertex[]
@@ -19,9 +22,9 @@ function load_obj(path::AbstractString; frame::LocalFrame=IdentityFrame(), scale
         (isempty(s) || s[1] == '#') && continue
         t = split(s)
         if t[1] == "v"
-            push!(P, to_local32(frame, scale .* Vec3d(parse.(Float64, t[2:4])...)))
+            push!(P, to_local32(frame, scale .* rot(Vec3d(parse.(Float64, t[2:4])...))))
         elseif t[1] == "vn"
-            push!(N, Vec3f(parse.(Float32, t[2:4])...))
+            push!(N, Vec3f(rot(Vec3d(parse.(Float64, t[2:4])...))))
         elseif t[1] == "vt"
             push!(T, Vec2f(parse(Float32, t[2]), length(t) > 2 ? parse(Float32, t[3]) : 0f0))
         elseif t[1] == "f"

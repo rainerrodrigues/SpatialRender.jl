@@ -9,11 +9,16 @@ With `smooth=false` (the default, right for CAD parts) every facet keeps its
 own three vertices and the facet normal, so hard edges stay hard. With
 `smooth=true` coincident vertices are welded and normals averaged.
 `scale` converts units (e.g. `scale=1e-3` for millimetre CAD into metres).
+`up=:y` converts a Y-up model (common from 3D modelling tools) to the
+scene's Z-up convention.
 """
 function load_stl(path::AbstractString; smooth::Bool=false, frame::LocalFrame=IdentityFrame(),
-                  name=basename(path), scale::Real=1.0, kwargs...)
+                  name=basename(path), scale::Real=1.0, up::Symbol=:z, kwargs...)
     tris = open(path) do io
         is_binary_stl(path) ? read_binary_stl(io) : read_ascii_stl(io)
+    end
+    if _up_check(up) == :y
+        tris = [map(y_up_to_z_up, t) for t in tris]
     end
     return build_trimesh(tris, frame, Float64(scale), smooth; name, kwargs...)
 end

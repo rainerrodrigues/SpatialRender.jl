@@ -1,5 +1,9 @@
 # Format dispatch.
 
+"Rotate a Y-up vector into the Z-up convention (+Y becomes +Z, +Z becomes -Y)."
+y_up_to_z_up(v) = Vec3d(v[1], -v[3], v[2])
+_up_check(up::Symbol) = up in (:z, :y) ? up : throw(ArgumentError("up must be :z or :y, got :$up"))
+
 """
     load_mesh(path; kwargs...) -> TriMesh
 

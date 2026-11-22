@@ -24,18 +24,20 @@ struct MCAPChannel
     metadata::Dict{String, String}
 end
 
-"Where one message lives: in the file (`chunk == 0`) or in a decompressed chunk."
+"Where one message lives: file `file`, at top level (`chunk == 0`) or in a decompressed chunk."
 struct MessageRef
     log_time::Int64
     publish_time::Int64
     channel::UInt16
     sequence::UInt32
+    file::Int32
     chunk::Int32
     offset::Int          # 0-based offset of the payload in the file / chunk
     len::Int
 end
 
 struct ChunkInfo
+    file::Int32
     offset::Int          # 0-based file offset of the (possibly compressed) records
     len::Int
     compression::String
@@ -45,13 +47,15 @@ end
 """
     MCAPFile
 
-An opened MCAP file: schemas, channels and a time-sorted index of every
-message. Payloads are read lazily ([`message_data`](@ref)); compressed chunks
-are decompressed on demand and a few are cached.
+An opened MCAP recording: schemas, channels and a time-sorted index of every
+message. A split rosbag2 recording (several `.mcap` files) is one `MCAPFile`
+with one timeline. Payloads are read lazily ([`message_data`](@ref));
+compressed chunks are decompressed on demand and a few are cached.
 """
 mutable struct MCAPFile
-    path::String
-    data::Vector{UInt8}
+    path::String                      # the file, or the rosbag2 directory
+    files::Vector{String}
+    data::Vector{Vector{UInt8}}       # memory map of each file
     schemas::Dict{UInt16, MCAPSchema}
     channels::Dict{UInt16, MCAPChannel}
     messages::Vector{MessageRef}
@@ -93,28 +97,79 @@ end
 """
     open_mcap(path) -> MCAPFile
 
-Open an `.mcap` file, or a rosbag2 directory containing one (with
-`metadata.yaml`). Scans the file once to index every message by log time.
+Open an `.mcap` file, or a rosbag2 directory. A directory may hold a split
+recording (several `.mcap` files, as `ros2 bag record --max-bag-size` writes);
+all of them are read, in the order `metadata.yaml` lists them (else by name),
+into one time-sorted index.
 """
 function open_mcap(path::AbstractString)
-    if isdir(path)
-        files = sort(filter(f -> endswith(f, ".mcap"), readdir(path; join=true)))
-        isempty(files) && error("$path contains no .mcap file " *
-            "(rosbag2 SQLite `.db3` bags are not supported: convert with `ros2 bag convert` to MCAP)")
-        length(files) > 1 && @warn "rosbag2 directory has $(length(files)) MCAP files; reading $(basename(files[1])) only"
-        path = files[1]
-    end
-    data = Mmap.mmap(path)
-    length(data) >= 16 && data[1:8] == MCAP_MAGIC || error("$path is not an MCAP file")
-    f = MCAPFile(String(path), data, Dict{UInt16, MCAPSchema}(), Dict{UInt16, MCAPChannel}(),
+    files = isdir(path) ? _bag_files(path) : [String(path)]
+    f = MCAPFile(String(path), files, Vector{UInt8}[], Dict{UInt16, MCAPSchema}(), Dict{UInt16, MCAPChannel}(),
                  MessageRef[], ChunkInfo[], Pair{Int32, Vector{UInt8}}[], ReentrantLock())
-    _scan_records!(f, data, 8, length(data), Int32(0))
+    schema_ids = Dict{Tuple{String, String, Vector{UInt8}}, UInt16}()
+    channel_ids = Dict{Tuple{String, String, UInt16}, UInt16}()
+    for (k, file) in enumerate(files)
+        data = Mmap.mmap(file)
+        length(data) >= 16 && data[1:8] == MCAP_MAGIC || error("$file is not an MCAP file")
+        push!(f.data, data)
+        # scan this file with its own id tables, then merge them by content:
+        # each file of a split bag is a complete MCAP and may number differently
+        local_sc = Dict{UInt16, MCAPSchema}(); local_ch = Dict{UInt16, MCAPChannel}()
+        first_msg = length(f.messages) + 1
+        _scan_records!(f, local_sc, local_ch, data, 8, length(data), Int32(0), Int32(k))
+        if length(files) == 1                       # a single file keeps its own ids
+            merge!(f.schemas, local_sc); merge!(f.channels, local_ch)
+            continue
+        end
+        scmap = Dict{UInt16, UInt16}(UInt16(0) => UInt16(0))     # 0 = schemaless
+        for (id, sc) in local_sc
+            scmap[id] = get!(schema_ids, (sc.name, sc.encoding, sc.data)) do
+                g = UInt16(length(f.schemas) + 1)
+                f.schemas[g] = MCAPSchema(g, sc.name, sc.encoding, sc.data); g
+            end
+        end
+        chmap = Dict{UInt16, UInt16}()
+        for (id, ch) in local_ch
+            sid = get(scmap, ch.schema_id, UInt16(0))
+            chmap[id] = get!(channel_ids, (ch.topic, ch.message_encoding, sid)) do
+                g = UInt16(length(f.channels) + 1)
+                f.channels[g] = MCAPChannel(g, sid, ch.topic, ch.message_encoding, ch.metadata); g
+            end
+        end
+        for j in first_msg:length(f.messages)
+            m = f.messages[j]
+            f.messages[j] = MessageRef(m.log_time, m.publish_time, get(chmap, m.channel, m.channel),
+                                       m.sequence, m.file, m.chunk, m.offset, m.len)
+        end
+    end
     sort!(f.messages; by = m -> m.log_time, alg = MergeSort)       # stable: keeps file order on ties
     return f
 end
 
-# Walk a record stream: top level of the file (chunk 0) or the inside of a chunk.
-function _scan_records!(f::MCAPFile, d, start, stop, chunk::Int32)
+# The data files of a rosbag2 directory, in recording order.
+function _bag_files(dir)
+    mcaps = sort(filter(f -> endswith(f, ".mcap"), readdir(dir)))
+    isempty(mcaps) && error("$dir contains no .mcap file " *
+        "(rosbag2 SQLite `.db3` bags are not supported: convert with `ros2 bag convert` to MCAP)")
+    meta = joinpath(dir, "metadata.yaml")
+    if isfile(meta)                                          # relative_file_paths: - a.mcap - b.mcap
+        listed = String[]; inlist = false
+        for l in eachline(meta)
+            if occursin(r"^\s*relative_file_paths:", l)
+                inlist = true
+            elseif inlist
+                m = match(r"^\s*-\s*(\S+\.mcap)\s*$", l)
+                m === nothing ? (inlist = false) : push!(listed, m[1])
+            end
+        end
+        listed = filter(x -> x in mcaps, listed)
+        !isempty(listed) && return [joinpath(dir, x) for x in listed]
+    end
+    return [joinpath(dir, x) for x in mcaps]
+end
+
+# Walk a record stream: top level of file `file` (chunk 0) or the inside of a chunk.
+function _scan_records!(f::MCAPFile, schemas, channels, d, start, stop, chunk::Int32, file::Int32)
     c = ByteCursor(d, start)
     while c.pos + 9 <= stop
         op = d[c.pos+1]; c.pos += 1
@@ -123,21 +178,21 @@ function _scan_records!(f::MCAPFile, d, start, stop, chunk::Int32)
         c.pos + len > stop && break                                  # truncated file: keep what we have
         if op == Op.SCHEMA
             id = rd(c, UInt16); name = rdstr(c); enc = rdstr(c); sd = rdbytes32(c)
-            f.schemas[id] = MCAPSchema(id, name, enc, sd)
+            schemas[id] = MCAPSchema(id, name, enc, sd)
         elseif op == Op.CHANNEL
             id = rd(c, UInt16); sid = rd(c, UInt16); topic = rdstr(c); enc = rdstr(c); md = rdmap(c)
-            f.channels[id] = MCAPChannel(id, sid, topic, enc, md)
+            channels[id] = MCAPChannel(id, sid, topic, enc, md)
         elseif op == Op.MESSAGE
             ch = rd(c, UInt16); seq = rd(c, UInt32); lt = rd(c, UInt64); pt = rd(c, UInt64)
-            push!(f.messages, MessageRef(Int64(lt), Int64(pt), ch, seq, chunk, c.pos, body + len - c.pos))
+            push!(f.messages, MessageRef(Int64(lt), Int64(pt), ch, seq, file, chunk, c.pos, body + len - c.pos))
         elseif op == Op.CHUNK && chunk == 0
             rd(c, UInt64); rd(c, UInt64)                              # start / end time
             usize = Int(rd(c, UInt64)); rd(c, UInt32)                 # uncompressed size, crc
             comp = rdstr(c); rlen = Int(rd(c, UInt64))
-            push!(f.chunks, ChunkInfo(c.pos, rlen, comp, usize))
+            push!(f.chunks, ChunkInfo(file, c.pos, rlen, comp, usize))
             id = Int32(length(f.chunks))
             records = _chunk_records(f, id)
-            _scan_records!(f, records, 0, length(records), id)
+            _scan_records!(f, schemas, channels, records, 0, length(records), id, file)
         elseif op == Op.DATA_END || op == Op.FOOTER
             break
         end
@@ -161,7 +216,7 @@ function _chunk_records(f::MCAPFile, id::Int32)
             return p.second
         end
         info = f.chunks[id]
-        out = _decompress(info, view(f.data, info.offset+1:info.offset+info.len))
+        out = _decompress(info, view(f.data[info.file], info.offset+1:info.offset+info.len))
         push!(f.cache, id => out)
         length(f.cache) > 6 && popfirst!(f.cache)
         return out
@@ -174,7 +229,7 @@ end
 Payload bytes of one indexed message (a view; copy it to keep it).
 """
 function message_data(f::MCAPFile, m::MessageRef)
-    buf = m.chunk == 0 ? f.data : _chunk_records(f, m.chunk)
+    buf = m.chunk == 0 ? f.data[m.file] : _chunk_records(f, m.chunk)
     return view(buf, m.offset+1:m.offset+m.len)
 end
 
@@ -196,7 +251,8 @@ time_range(f::MCAPFile) = isempty(f.messages) ? (0, 0) : (f.messages[1].log_time
 
 function Base.show(io::IO, ::MIME"text/plain", f::MCAPFile)
     t0, t1 = time_range(f)
-    println(io, "MCAPFile $(basename(f.path)): $(length(f.messages)) messages, ",
+    nf = length(f.files) > 1 ? " ($(length(f.files)) files)" : ""
+    println(io, "MCAPFile $(basename(rstrip(f.path, '/')))$nf: $(length(f.messages)) messages, ",
             @sprintf("%.2f s", (t1 - t0) / 1e9), ", $(length(f.chunks)) chunks")
     for t in topics(f)
         println(io, "  ", rpad(t.topic, 28), rpad(t.type, 34), t.count)

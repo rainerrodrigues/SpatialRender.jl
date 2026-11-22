@@ -49,6 +49,20 @@ end
 "Centre of the header bounding box: a good local origin for this file."
 las_center(h::LASHeader) = (h.lo + h.hi) / 2
 
+# Local origin: the header box centre, unless the header box is wrong (some
+# writers leave zeros or stale values) and the data lies elsewhere; then the
+# first point, so local Float32 coordinates stay small and precise.
+function _las_origin(data, h::LASHeader, npts, path)
+    npts == 0 && return las_center(h)
+    o = h.offset_to_points
+    first = Vec3d(_rd(Int32, data, o) * h.scale[1] + h.offset[1], _rd(Int32, data, o + 4) * h.scale[2] + h.offset[2],
+                  _rd(Int32, data, o + 8) * h.scale[3] + h.offset[3])
+    tol = 1 .+ 0.01 .* abs.(h.hi - h.lo)
+    all(h.lo - tol .<= first .<= h.hi + tol) && return las_center(h)
+    @warn "$(basename(path)): the header bounding box does not contain the points; using the first point as the local origin"
+    return round.(first)
+end
+
 # Byte offsets inside a point record: (classification, rgb, gps_time); -1 = absent.
 function _las_layout(fmt::Int)
     0 <= fmt <= 10 || error("unsupported LAS point format $fmt")
@@ -81,14 +95,22 @@ function load_las(path::AbstractString; frame::Union{Nothing, LocalFrame}=nothin
     data = Mmap.mmap(path)
     h = read_las_header(data)
     h.compressed && error("$path is LAZ-compressed; use load_laz")
-    fr = something(frame, OffsetFrame(las_center(h)))
     cls_off, rgb_off, gps_off = _las_layout(h.point_format)
     gps_time && gps_off < 0 && @warn "LAS point format $(h.point_format) has no GPS time"
     rl = h.record_length
     base = h.offset_to_points
-    length(data) >= base + rl * h.npoints || error("truncated LAS file: header promises $(h.npoints) points")
+    rl > 0 && base >= 0 || error("$path: invalid LAS header (record length $rl, point offset $base)")
+    # Truncated files (interrupted downloads, broken writers): read the complete
+    # records that are there, like PDAL and LAStools, instead of refusing.
+    npts = h.npoints
+    avail = max(length(data) - base, 0) ÷ rl
+    if avail < npts
+        @warn "$(basename(path)): header promises $npts points but the file holds $avail complete records; reading those"
+        npts = avail
+    end
+    fr = something(frame, OffsetFrame(_las_origin(data, h, npts, path)))
 
-    sel = 1:stride:h.npoints                 # lazy range: no per-point index array
+    sel = 1:stride:npts                      # lazy range: no per-point index array
     if classes !== nothing
         cset = Set{UInt8}(UInt8.(classes))
         mask = cls_off == 15 ?
