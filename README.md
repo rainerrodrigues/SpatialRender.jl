@@ -68,7 +68,7 @@ julia -t auto --project=. examples/replay.jl my_bag/  # replay a ROS 2 bag (no a
 | **Bag replay** | Native MCAP / rosbag2 reader, ROS 2 message decoding, TF frame tree, timeline player with seek and speed control, status overlay |
 | **Eye-dome lighting** | Screen-space log-depth shading on points and meshes (`B` toggles it) |
 | **Annotations** | Labels (`annotate!`) and measurements (`measure!`: distance, Δz, slope) in an original stroke font, so no font files are needed; measure mode in the viewer |
-| **Output** | Interactive window; `render_offscreen` / `screenshot` to PNG (zlib from Julia's own `Zlib_jll`) for CI and reports |
+| **Output** | Interactive window; `snapshot` (shown inline in notebooks), `render_offscreen` / `screenshot` to PNG (zlib from Julia's own `Zlib_jll`) for CI and reports |
 
 ## Viewer controls
 
@@ -267,6 +267,7 @@ Besides the unit tests, the readers were checked against public test data:
 | ASCII and binary STL (the same parts in both encodings), OBJ with normals and UVs | three.js examples | both encodings give identical triangles |
 | 20 GeoJSON files with nulls, BOMs, collections and invalid JSON | GDAL's test data | geometry counts match an independent count |
 | A 25-minute, 1.3 GB recording from an autonomous shuttle bus: 9 LiDAR topics (Velodyne VLP-16, localisation and safety scanners), 4 odometry sources, GNSS and TF | [nUWAy2](https://huggingface.co/datasets/xrkong/nuway_rosbag) (MIT) | all 70 topic counts match `metadata.yaml`; every point cloud decodes in four real field layouts; scans placed via TF register scan to scan (no convention error: the inverse transform fits 9× worse) |
+| 60 s of a handheld forest walk: Ouster OS0-64 at 20 Hz, `/tf` map → body for every scan, `/tf_static` mountings including the Ouster's 180° sensor → lidar yaw | [Forest walks 2026-08-12](https://doi.org/10.5281/zenodo.24378954) (CC BY 4.0) | all 13 published static transforms reproduced (≤ 5e-14); `/tf` poses match the published trajectory to 1 µm; scans placed through the full TF chain lie on the dataset's registered map with a median of 4.3 cm, 99.6 % within 10 cm (the map's 0.1 m voxels limit this). Without `/tf_static`: 20 cm, 30 %. Reproduce with `benchmark/realdata_tf_alignment.jl` |
 
 The shuttle recording showed what real logs look like: `/tf_static` not
 recorded (sensor frames missing from TF), odometry in an unconnected `odom`

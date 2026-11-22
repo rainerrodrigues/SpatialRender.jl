@@ -73,3 +73,23 @@ Robustness and documentation:
   so colourless clouds no longer come back as white RGB.
 - Scan-age colouring starts from bright red-orange (the dark end of the
   colormap was invisible on the dark background).
+
+Faster first use and notebook display:
+
+- A PrecompileTools workload caches compiled code for loading, filtering,
+  indexing, octree building, bag replay and the OpenGL paths: the first
+  offscreen render takes 2.4 s instead of 7.7 s, the first viewer frame 0.3 s
+  instead of 2.7 s, and the first LAS load and filter 0.02 s instead of 1.7 s.
+- `snapshot(scene)` returns a `Snapshot` that Jupyter, VS Code, Pluto and
+  Documenter display inline; `write_png(io, img)` writes to any stream. The
+  tutorial images now render on the published documentation site.
+
+Checked on a real recording with `/tf_static` (an Ouster OS0-64 forest walk,
+CC BY 4.0): LiDAR scans placed through `map → body → base_link → os_sensor →
+os_lidar` lie on the dataset's registered map with a median of 4.3 cm (99.6 %
+within 10 cm), against 20 cm without `/tf_static`
+(`benchmark/realdata_tf_alignment.jl`). Also:
+
+- `MCAPFile` prints as one line inside collections and string interpolation
+  (`println(bag)` used to print its raw chunk buffers), and its topic table
+  sizes its columns to the longest topic and type name.

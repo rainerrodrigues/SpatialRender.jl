@@ -691,8 +691,8 @@ end
 end
 
 # Minimal PNG reader for the tests: chunks → inflate (zlib) → undo "Up"/none filters.
-function read_png(path)
-    b = read(path)
+function read_png(src)
+    b = src isa Vector{UInt8} ? src : read(src)
     @assert b[1:8] == UInt8[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
     pos = 9; w = h = 0; idat = UInt8[]
     while pos < length(b)
@@ -791,6 +791,8 @@ end
     chatter = [t for t in topics(f) if t.topic == "/chatter"]
     @test length(chatter) == 1 && chatter[1].count == 10                            # one channel across files
     @test [message_data(f, m)[1] for m in f.messages] == [fill(0x02, 5); fill(0x01, 5)]   # payloads from the right file
+    @test sprint(show, f) == "MCAPFile(\"$(basename(bag))\", 10 messages)"     # one line, never the buffers
+    @test occursin("/chatter", sprint(show, MIME"text/plain"(), f))
 end
 
 @testset "real sensor recordings (nuway-like bag)" begin
@@ -949,6 +951,12 @@ end
     @test read_png(tmp("t.png")) == img
     noise = [(rand(UInt8), rand(UInt8), rand(UInt8)) for _ in 1:37, _ in 1:53]
     @test read_png(write_png(tmp("n.png"), noise)) == noise
+    io = IOBuffer(); write_png(io, noise)
+    @test read_png(take!(io)) == noise                            # IO method
+    snap = Snapshot(noise)
+    @test size(snap) == (37, 53) && sprint(show, snap) == "Snapshot(53×37)"
+    @test showable(MIME"image/png"(), snap)
+    @test read_png(Vector{UInt8}(repr(MIME"image/png"(), snap))) == noise   # what notebooks and Documenter show
     b = read(tmp("t.png"))
     @test b[1:8] == UInt8[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
     @test ntoh(reinterpret(UInt32, b[17:20])[1]) == 4      # width
@@ -958,7 +966,9 @@ end
 # --- GPU tests: only when an OpenGL 4.1 context can be created ---------------
 gl_available = try
     SpatialRender.with_hidden_context(() -> true)
-catch
+catch e
+    # say why, so CI logs show what the platform lacks (driver, display, Metal…)
+    @info "no OpenGL 4.1 context: " * first(split(sprint(showerror, e), '\n'))
     false
 end
 
@@ -998,6 +1008,8 @@ end
         write_png(tmp("s.png"), img_s)
         @test read_png(tmp("s.png")) == img_s                     # lossless round trip of a real render
         @test filesize(tmp("s.png")) < 128 * 96 * 3               # and actually compressed
+        snap = snapshot(scene; width=128, height=96)
+        @test snap isa Snapshot && size(snap) == (96, 128)
 
         # poses, streams and re-upload after touch!
         s2 = Scene()

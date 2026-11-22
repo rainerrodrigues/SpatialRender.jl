@@ -91,12 +91,11 @@ end
 append!(pts, [Vec3f(140rand(rng) - 70, 100rand(rng) - 50, 0.02randn(rng)) for _ in 1:60_000])
 scene = Scene(frame = enu)
 add!(scene, PointCloud(pts; name = "scan"), lines, track)
-screenshot("maps_site.png", scene; width = 900, height = 500,
+snapshot(scene; width = 900, height = 500,
            camera = Camera(position = Vec3d(-60, -95, 70), target = Vec3d(0, 0, 0)))
-nothing # hide
 ```
 
-![Building outlines, route and GNSS track over a scan, all in one ENU frame](maps_site.png)
+*Building outlines, route and GNSS track over a scan, all in one ENU frame*
 
 ## Projected data
 

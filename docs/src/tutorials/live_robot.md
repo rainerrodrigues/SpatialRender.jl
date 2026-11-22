@@ -75,11 +75,10 @@ fade, so you can see what the robot sees *now* against what it saw earlier.
 
 ```@example live
 camera = Camera(position = Vec3d(-12, -16, 13), target = Vec3d(0, 0, 0.5))
-screenshot("live_scans.png", scene; width = 900, height = 500, camera)
-nothing # hide
+snapshot(scene; width = 900, height = 500, camera)
 ```
 
-![The rover and its scans, coloured by age](live_scans.png)
+*The rover and its scans, coloured by age*
 
 ## From another task or thread
 
@@ -110,10 +109,9 @@ slope; the viewer's measure mode (`R`, then click two points) calls it for you.
 notes = add!(scene, Annotations())
 measure!(notes, Vec3f(posts[1]..., 0), Vec3f(posts[4]..., 0))
 annotate!(notes, Vec3f(4cos(6), 4sin(6), 1.5), "rover")
-screenshot("live_measure.png", scene; width = 900, height = 500, camera)
-nothing # hide
+snapshot(scene; width = 900, height = 500, camera)
 ```
 
-![A measurement between two posts and a label](live_measure.png)
+*A measurement between two posts and a label*
 
 **Next:** [Replaying ROS 2 bags](replay_bags.md).

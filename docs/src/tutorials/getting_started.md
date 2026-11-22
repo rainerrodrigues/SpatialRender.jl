@@ -70,25 +70,27 @@ scene
 
 ## Rendering an image
 
-[`screenshot`](@ref) renders without opening a window and writes a PNG. With
-no camera given, it frames the whole scene from the south-west.
+[`snapshot`](@ref) renders without opening a window and returns an image,
+which notebooks (Jupyter, VS Code, Pluto) and these pages display directly.
+With no camera given, it frames the whole scene from the south-west.
 
 ```@example start
-screenshot("first_scene.png", scene; width = 900, height = 500)
-nothing # hide
+snapshot(scene; width = 900, height = 500)
 ```
 
-![The first scene](first_scene.png)
+*The first scene*
+
+To save a file instead, use `screenshot("scene.png", scene)`, or
+`write_png("scene.png", snapshot(scene).pixels)`.
 
 For a chosen viewpoint, pass a [`Camera`](@ref):
 
 ```@example start
 camera = Camera(position = Vec3d(10, -14, 9), target = Vec3d(0, 0, 0.5))
-screenshot("first_scene_camera.png", scene; width = 900, height = 500, camera)
-nothing # hide
+snapshot(scene; width = 900, height = 500, camera)
 ```
 
-![The same scene from another viewpoint](first_scene_camera.png)
+*The same scene from another viewpoint*
 
 ## The interactive viewer
 
@@ -111,11 +113,10 @@ changes its pose, not its data.
 
 ```@example start
 set_pose!(box, Vec3d(0, 0, 2), Quat(Vec3d(0, 0, 1), π / 6))   # lift and turn the box
-screenshot("first_scene_moved.png", scene; width = 900, height = 500, camera)
-nothing # hide
+snapshot(scene; width = 900, height = 500, camera)
 ```
 
-![The box moved by its pose](first_scene_moved.png)
+*The box moved by its pose*
 
 After editing a layer's vertices in place, call [`touch!`](@ref) so the next
 frame uploads the new data.

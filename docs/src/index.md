@@ -65,7 +65,7 @@ julia -t auto --project=. examples/replay.jl my_bag/  # replay a ROS 2 bag (no a
 | **Bag replay** | Native MCAP / rosbag2 reader, ROS 2 message decoding, TF frame tree, timeline player with seek and speed control, status overlay |
 | **Eye-dome lighting** | Screen-space log-depth shading on points and meshes (`B` toggles it) |
 | **Annotations** | Labels (`annotate!`) and measurements (`measure!`: distance, Δz, slope) in an original stroke font, so no font files are needed; measure mode in the viewer |
-| **Output** | Interactive window; `render_offscreen` / `screenshot` to PNG (zlib from Julia's own `Zlib_jll`) for CI and reports |
+| **Output** | Interactive window; `snapshot` (shown inline in notebooks), `render_offscreen` / `screenshot` to PNG (zlib from Julia's own `Zlib_jll`) for CI and reports |
 
 ## Tested against real-world data
 

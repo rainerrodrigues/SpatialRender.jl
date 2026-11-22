@@ -70,11 +70,10 @@ classified.color_mode = Int32(COLOR_CLASSIFICATION)
 scene = Scene(frame = frame)
 add!(scene, classified)
 camera = Camera(position = Vec3d(-70, -80, 55), target = Vec3d(0, 0, 0))
-screenshot("pc_classified.png", scene; width = 900, height = 500, camera)
-nothing # hide
+snapshot(scene; width = 900, height = 500, camera)
 ```
 
-![Ground (brown) and everything else, coloured by class](pc_classified.png)
+*Ground (brown) and everything else, coloured by class*
 
 Other filters: [`VoxelDownsample`](@ref) (one point per voxel),
 [`RadiusOutlierFilter`](@ref), and [`CropBox`](@ref) (e.g. to cut the vehicle
@@ -95,11 +94,10 @@ shades depth edges so shapes read well even without colour:
 
 ```@example pc
 classified.color_mode = Int32(COLOR_HEIGHT)
-screenshot("pc_height.png", scene; width = 900, height = 500, camera)
-nothing # hide
+snapshot(scene; width = 900, height = 500, camera)
 ```
 
-![The same cloud coloured by height](pc_height.png)
+*The same cloud coloured by height*
 
 ## Queries
 
@@ -135,12 +133,11 @@ big = Scene()
 load!(big, "survey_octree"; point_budget = 100_000)   # draw at most 100k points
 octree = big.layers[1]
 println(length(octree), " points in ", length(octree.nodes), " nodes")
-screenshot("pc_octree.png", big; width = 900, height = 500,
+snapshot(big; width = 900, height = 500,
            camera = Camera(position = Vec3d(-70, -80, 55), target = Vec3d(0, 0, 0)))
-nothing # hide
 ```
 
-![The octree drawn within a 100k point budget](pc_octree.png)
+*The octree drawn within a 100k point budget*
 
 Even with a tight budget the surface looks continuous: each node's points are
 drawn at a size that matches its point spacing.

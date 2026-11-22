@@ -19,9 +19,12 @@ function _crc32(data)
 end
 
 """
-    write_png(path, img::Matrix{NTuple{3,UInt8}}) -> path
+    write_png(path_or_io, img::Matrix{NTuple{3,UInt8}})
+
+Write an RGB image (rows top to bottom) as PNG to a file path (returns the
+path) or to any `IO` (returns the `IO`).
 """
-function write_png(path::AbstractString, img::AbstractMatrix{NTuple{3, UInt8}})
+function write_png(io::IO, img::AbstractMatrix{NTuple{3, UInt8}})
     h, w = size(img)
     raw = Vector{UInt8}(undef, h * (1 + 3w))
     k = 0
@@ -35,15 +38,42 @@ function write_png(path::AbstractString, img::AbstractMatrix{NTuple{3, UInt8}})
         end
     end
     idat = zlib_compress(raw; level=6)
-    chunk(io, typ, data) = (write(io, hton(UInt32(length(data)))); td = vcat(Vector{UInt8}(typ), data);
-                            write(io, td); write(io, hton(_crc32(td))))
-    open(path, "w") do io
-        write(io, UInt8[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
-        ihdr = IOBuffer()
-        write(ihdr, hton(UInt32(w)), hton(UInt32(h)), UInt8(8), UInt8(2), UInt8(0), UInt8(0), UInt8(0))
-        chunk(io, "IHDR", take!(ihdr))
-        chunk(io, "IDAT", idat)
-        chunk(io, "IEND", UInt8[])
-    end
-    return path
+    chunk(typ, data) = (write(io, hton(UInt32(length(data)))); td = vcat(Vector{UInt8}(typ), data);
+                        write(io, td); write(io, hton(_crc32(td))))
+    write(io, UInt8[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+    ihdr = IOBuffer()
+    write(ihdr, hton(UInt32(w)), hton(UInt32(h)), UInt8(8), UInt8(2), UInt8(0), UInt8(0), UInt8(0))
+    chunk("IHDR", take!(ihdr))
+    chunk("IDAT", idat)
+    chunk("IEND", UInt8[])
+    return io
 end
+write_png(path::AbstractString, img::AbstractMatrix{NTuple{3, UInt8}}) =
+    (open(io -> write_png(io, img), path, "w"); path)
+
+"""
+    Snapshot
+
+A rendered image that displays itself: inline in Jupyter, VS Code and Pluto,
+and as a picture in Documenter pages. Create with [`snapshot`](@ref); the
+pixels are in `.pixels` (rows top to bottom), `write_png(path, s.pixels)`
+saves them.
+"""
+struct Snapshot
+    pixels::Matrix{NTuple{3, UInt8}}
+end
+Base.show(io::IO, ::MIME"image/png", s::Snapshot) = (write_png(io, s.pixels); nothing)
+Base.show(io::IO, s::Snapshot) = print(io, "Snapshot(", size(s.pixels, 2), "×", size(s.pixels, 1), ")")
+Base.size(s::Snapshot) = size(s.pixels)
+
+"""
+    snapshot(scene; width=1024, height=768, camera=nothing, settings) -> Snapshot
+
+[`render_offscreen`](@ref) wrapped in a [`Snapshot`](@ref), which notebooks
+and documentation show as an image.
+
+```julia
+snapshot(scene; width = 800, height = 450)   # in a notebook cell: the picture appears
+```
+"""
+snapshot(scene::Scene; kwargs...) = Snapshot(render_offscreen(scene; kwargs...))

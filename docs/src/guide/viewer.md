@@ -37,7 +37,8 @@ undo!
 
 ## Screenshots and headless use
 
-`render_offscreen` and `screenshot` render without opening a window. On a
+`snapshot`, `render_offscreen` and `screenshot` render without opening a
+window; `snapshot` returns an image that notebooks display inline. On a
 machine without any display (a server or CI), GLFW falls back to its null
 platform and offscreen rendering still works where the OpenGL driver supports
 it. Set `JULIA_GLFW_PLATFORM=null` to say this is intended and silence GLFW's
@@ -45,6 +46,7 @@ warnings.
 
 ```@docs; canonical=false
 open_viewer
+snapshot
 render_offscreen
 screenshot
 RenderSettings

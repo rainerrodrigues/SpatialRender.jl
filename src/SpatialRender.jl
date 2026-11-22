@@ -85,6 +85,8 @@ include("ros/cdr.jl")
 include("ros/tf.jl")
 include("ros/player.jl")
 
+include("precompile.jl")             # last: exercises everything above
+
 # geometry
 export Vec3f, Vec3d, Vec2f, Vec4f, Mat4f, AABB
 export PointVertex, MeshVertex, LineVertex, intensity
@@ -126,7 +128,7 @@ export Quat, Camera, OrbitMode, FlyMode, view_matrix, projection_matrix, view_pr
        CameraController, InputState, set_pivot!
 # render
 export open_viewer, gl_info, configure_gpu!, Viewer, step!, run!, pick!, measure_click!, Renderer, RenderSettings, render_frame!,
-       render_offscreen, screenshot, write_png, compile_cache_stats, validate_shaders,
+       render_offscreen, screenshot, snapshot, Snapshot, write_png, compile_cache_stats, validate_shaders,
        ShaderSource
 
 end # module

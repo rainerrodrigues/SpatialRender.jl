@@ -68,11 +68,10 @@ Supported topics:
 ```@example bag
 seek!(player, 7.0)
 camera = Camera(position = Vec3d(-6, -14, 10), target = Vec3d(10, 0, 1))
-screenshot("bag_t7.png", player.scene; width = 900, height = 500, camera)
-nothing # hide
+snapshot(player.scene; width = 900, height = 500, camera)
 ```
 
-![The robot at t = 7 s, with the last few scans of the wall](bag_t7.png)
+*The robot at t = 7 s, with the last few scans of the wall*
 
 The wall is in the same place in every scan although the robot moved: each
 scan was transformed with the robot's pose at its timestamp.

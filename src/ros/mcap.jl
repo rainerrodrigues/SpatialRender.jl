@@ -254,10 +254,16 @@ function Base.show(io::IO, ::MIME"text/plain", f::MCAPFile)
     nf = length(f.files) > 1 ? " ($(length(f.files)) files)" : ""
     println(io, "MCAPFile $(basename(rstrip(f.path, '/')))$nf: $(length(f.messages)) messages, ",
             @sprintf("%.2f s", (t1 - t0) / 1e9), ", $(length(f.chunks)) chunks")
-    for t in topics(f)
-        println(io, "  ", rpad(t.topic, 28), rpad(t.type, 34), t.count)
+    ts = topics(f)
+    wt = maximum((length(t.topic) for t in ts); init=0) + 2
+    wy = maximum((length(t.type) for t in ts); init=0) + 2
+    for t in ts
+        println(io, "  ", rpad(t.topic, wt), rpad(t.type, wy), t.count)
     end
 end
+# one line (inside collections, `println(bag)`, string interpolation): never the raw buffers
+Base.show(io::IO, f::MCAPFile) =
+    print(io, "MCAPFile(", repr(basename(rstrip(f.path, '/'))), ", ", length(f.messages), " messages)")
 
 # --- writer -----------------------------------------------------------------------
 
