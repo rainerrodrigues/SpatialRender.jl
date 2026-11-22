@@ -32,7 +32,21 @@ ROS installation. Each topic type is drawn like this:
 | `sensor_msgs/NavSatFix` | ENU track whose first fix is anchored at the robot's pose |
 
 The fixed frame is `map`, `world` or `odom` (whichever exists), else the
-root of the TF tree; `fixed_frame =` overrides it. `MCAPWriter` and the
+root of the TF tree; `fixed_frame =` overrides it.
+
+Real recordings are often incomplete, and the player is built for that:
+
+- **Sensor frames missing from TF** (typically when `/tf_static` was published
+  before recording started) are drawn at the robot's base frame, with a
+  warning. Give the real mountings with
+  `open_bag(bag; static_transforms = [StampedTransform(0, "base_link", "lidar_front", Vec3d(1.2, 0, 1.8), Quat())])`,
+  or choose `missing_frames = :origin` / `:skip`.
+- **Recording gaps** break trails instead of drawing straight jumps, and TF is
+  only interpolated across gaps up to `max_tf_gap` seconds (default 2).
+- **Sparse or throttled LiDAR topics:** `history = :auto` keeps enough scans
+  on screen for the sparsest one.
+- **Data recorded in bursts:** with `skip_gaps = true` (default) playback jumps
+  over stretches with no messages. `MCAPWriter` and the
 `encode_*` functions write bags from Julia: `examples/replay.jl` records its
 demo bag this way.
 

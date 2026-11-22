@@ -43,3 +43,17 @@ the README):
   and files with no coordinates at all; invalid JSON gets a clear error.
 - `load_stl` / `load_obj` take `up = :y` for Y-up models.
 - PointCloud2 decoding is ~50× faster (a type instability in the per-point loop).
+
+Tested on a real 25-minute autonomous-shuttle recording (nUWAy2), which led to:
+
+- Sensor frames missing from TF (no `/tf_static` recorded) are drawn at the
+  robot frame with a warning (`missing_frames = :robot`, or `:origin` /
+  `:skip`); unconnected world frames such as `odom` are drawn untransformed;
+  `static_transforms = [...]` supplies the real mountings.
+- Recording gaps: `trajectory(...; max_gap)` breaks lines across them, the
+  player does so for every trail and the GNSS track, and `FrameTree` only
+  interpolates across gaps up to `max_gap` (default 2 s).
+- `history = :auto` (default) keeps enough scans for sparse / throttled
+  LiDAR topics; `skip_gaps = true` jumps over stretches without messages.
+- The GNSS track is anchored to a pose track whose frame really reaches the
+  fixed frame.

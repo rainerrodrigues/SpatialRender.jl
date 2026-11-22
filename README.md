@@ -142,7 +142,21 @@ ROS installation. Each topic type is drawn like this:
 | `sensor_msgs/NavSatFix` | ENU track whose first fix is anchored at the robot's pose |
 
 The fixed frame is `map`, `world` or `odom` (whichever exists), else the
-root of the TF tree; `fixed_frame =` overrides it. `MCAPWriter` and the
+root of the TF tree; `fixed_frame =` overrides it.
+
+Real recordings are often incomplete, and the player is built for that:
+
+- **Sensor frames missing from TF** (typically when `/tf_static` was published
+  before recording started) are drawn at the robot's base frame, with a
+  warning. Give the real mountings with
+  `open_bag(bag; static_transforms = [StampedTransform(0, "base_link", "lidar_front", Vec3d(1.2, 0, 1.8), Quat())])`,
+  or choose `missing_frames = :origin` / `:skip`.
+- **Recording gaps** break trails instead of drawing straight jumps, and TF is
+  only interpolated across gaps up to `max_tf_gap` seconds (default 2).
+- **Sparse or throttled LiDAR topics:** `history = :auto` keeps enough scans
+  on screen for the sparsest one.
+- **Data recorded in bursts:** with `skip_gaps = true` (default) playback jumps
+  over stretches with no messages. `MCAPWriter` and the
 `encode_*` functions write bags from Julia: `examples/replay.jl` records its
 demo bag this way.
 
@@ -245,11 +259,13 @@ Besides the unit tests, the readers were checked against public test data:
 | 33 LAS files: versions 1.0–1.4, point formats 0–3, 6 and 7, extra bytes, many VLRs, deliberately broken files | PDAL's test data | identical to LasIO.jl on every point where LasIO can read the file (positions within 0.12 mm); the header bounds agree elsewhere |
 | ASCII and binary STL (the same parts in both encodings), OBJ with normals and UVs | three.js examples | both encodings give identical triangles |
 | 20 GeoJSON files with nulls, BOMs, collections and invalid JSON | GDAL's test data | geometry counts match an independent count |
+| A 25-minute, 1.3 GB recording from an autonomous shuttle bus: 9 LiDAR topics (Velodyne VLP-16, localisation and safety scanners), 4 odometry sources, GNSS and TF | [nUWAy2](https://huggingface.co/datasets/xrkong/nuway_rosbag) (MIT) | all 70 topic counts match `metadata.yaml`; every point cloud decodes in four real field layouts; scans placed via TF register scan to scan (no convention error: the inverse transform fits 9× worse) |
 
-What the round found and fixed is listed in the CHANGELOG. Not yet checked
-against a real recording: `PointCloud2`, `Odometry` and `TF` messages from
-actual sensors (the bags above carry simple message types). A short bag from
-your own robot is the most useful next test.
+The shuttle recording showed what real logs look like: `/tf_static` not
+recorded (sensor frames missing from TF), odometry in an unconnected `odom`
+frame, recording gaps of several minutes, heavily throttled LiDAR topics and
+data captured in bursts. The player handles each of these (see the replay
+section); the fixes are listed in the CHANGELOG.
 
 ## Limits
 

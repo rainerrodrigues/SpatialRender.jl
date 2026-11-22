@@ -14,6 +14,8 @@ struct PoseTrack
     poses::Vector{Rigid}
     trail::LineLayer
     marker::LineLayer
+    gap::Int64            # ns: samples further apart than this bracket a recording gap
+    connected::Bool       # its frame reaches the fixed frame through TF (no fallback used)
 end
 
 """
@@ -43,6 +45,10 @@ mutable struct BagPlayer
     intensity_range::Union{Nothing, Float64}
     scans::Int
     warned::Set{String}
+    missing_frames::Symbol                  # :robot, :origin or :skip
+    robot_frame::Union{Nothing, String}     # where unconnected sensor frames go (:robot)
+    skip_gaps::Bool                         # jump over stretches with no messages while playing
+    skipped::Int                            # how many gaps were skipped (for the status line)
 end
 
 function _warn_once(p::BagPlayer, key, msg)
@@ -52,12 +58,44 @@ function _warn_once(p::BagPlayer, key, msg)
 end
 
 # fixed ← frame at stamp; identity (with one warning per frame) when unconnected
+# fixed ← frame at stamp. Frames missing from the TF tree (very often: sensor
+# mountings published on /tf_static before recording started) are handled by
+# `missing_frames`: attached to the robot frame, drawn untransformed, or skipped
+# (`nothing`). One warning per frame.
 function _to_fixed(p::BagPlayer, frame::AbstractString, stamp::Int64)
     isempty(frame) && return Rigid()
     T = lookup_transform(p.tree, p.fixed_frame, frame, stamp)
     T === nothing || return T
-    _warn_once(p, frame, "no transform from \"$frame\" to fixed frame \"$(p.fixed_frame)\"; drawing it untransformed")
+    hint = "supply its mounting with open_bag(...; static_transforms = [...])"
+    if p.missing_frames == :robot && p.robot_frame !== nothing && !_is_world_frame(frame)
+        R = lookup_transform(p.tree, p.fixed_frame, p.robot_frame, stamp)
+        if R !== nothing
+            _warn_once(p, frame, "frame \"$frame\" is not in the TF tree (no /tf_static recorded?); " *
+                       "drawing it at \"$(p.robot_frame)\" ($hint)")
+            return R
+        end
+    end
+    if p.missing_frames == :skip
+        _warn_once(p, frame, "frame \"$frame\" is not connected to \"$(p.fixed_frame)\"; skipping its data ($hint)")
+        return nothing
+    end
+    _warn_once(p, frame, "no transform from \"$frame\" to fixed frame \"$(p.fixed_frame)\"; drawing it untransformed ($hint)")
     return Rigid()
+end
+
+# World-fixed frames (odom, map, …) are never mounted on the robot: when one is
+# unconnected it is drawn as if it coincided with the fixed frame.
+_is_world_frame(f) = occursin(r"(^|/|_)(odom|map|world|earth|utm|enu)($|/|_)"i, f)
+
+# The robot body frame: a conventional name if it is connected to the fixed
+# frame, else the TF child connected to it that is updated most often.
+function _robot_frame(tree::FrameTree, fixed::String)
+    connected(f) = lookup_transform(tree, fixed, f, 0) !== nothing
+    for f in ("base_link", "base_footprint", "base")
+        f in frames(tree) && f != fixed && connected(f) && return f
+    end
+    cands = [(length(e.times), c) for (c, e) in tree.edges if c != fixed && !e.static && connected(c)]
+    return isempty(cands) ? nothing : last(maximum(cands))
 end
 
 "An RGB axes triad (x red, y green, z blue) as a line layer, `len` metres long."
@@ -66,6 +104,18 @@ function axes_marker(len::Real; name="axes", width=3)
     LineLayer([Polyline([Vec3f(0, 0, 0), Vec3f(L, 0, 0)], Vec4f(0.95, 0.25, 0.25, 1)),
                Polyline([Vec3f(0, 0, 0), Vec3f(0, L, 0)], Vec4f(0.3, 0.9, 0.3, 1)),
                Polyline([Vec3f(0, 0, 0), Vec3f(0, 0, L)], Vec4f(0.3, 0.5, 1.0, 1))]; name, width)
+end
+
+# Scans to keep visible: at least ~2.5 typical intervals of the sparsest point
+# cloud topic (throttled recordings publish a scan every few seconds), 3–30 s.
+function _auto_history(bag::MCAPFile, kind)
+    times = Dict{UInt16, Vector{Int64}}()
+    for m in bag.messages
+        kind[m.channel] == T_CLOUD && push!(get!(() -> Int64[], times, m.channel), m.log_time)
+    end
+    intervals = [median(diff(ts)) / 1e9 for ts in values(times) if length(ts) >= 3]
+    isempty(intervals) && return 3.0
+    return clamp(2.5 * maximum(intervals), 3.0, 30.0)
 end
 
 """
@@ -84,15 +134,24 @@ Open a ROS 2 bag (an `.mcap` file or a rosbag2 directory) for replay into
 
 `/tf` and `/tf_static` build the frame tree. Everything is drawn in
 `fixed_frame` (default: `map`, `world`, `odom`, else the tree's root).
-`history` seconds of scans stay visible. `topics` restricts which topics
+`history` seconds of scans stay visible (`:auto`: enough for the sparsest
+point cloud topic, 3–30 s). Sensor frames missing from TF (typically when
+`/tf_static` was not recorded) are drawn at the robot frame with
+`missing_frames = :robot` (or untransformed with `:origin`, or not at all with
+`:skip`); give the real mountings with `static_transforms = [StampedTransform(...)]`.
+TF is interpolated only across gaps up to `max_tf_gap` seconds. With
+`skip_gaps`, playback jumps over stretches with no messages. `topics` restricts which topics
 are shown.
 """
 function open_bag(path::AbstractString; scene::Scene=Scene(), fixed_frame=nothing, topics=nothing,
-                  cloud_capacity::Integer=2_000_000, history::Real=3.0, intensity_range=nothing,
-                  marker_size=nothing)
+                  cloud_capacity::Integer=2_000_000, history=:auto, intensity_range=nothing,
+                  marker_size=nothing, static_transforms=StampedTransform[], missing_frames::Symbol=:robot,
+                  max_tf_gap::Real=2.0, skip_gaps::Bool=true)
+    missing_frames in (:robot, :origin, :skip) ||
+        throw(ArgumentError("missing_frames must be :robot, :origin or :skip"))
     bag = open_mcap(path)
     isempty(bag.messages) && error("$path contains no messages")
-    tree = FrameTree()
+    tree = FrameTree(; max_gap=max_tf_gap)
     kind = Dict(id => schema_name(bag, id) for id in keys(bag.channels))
     for (id, c) in bag.channels
         c.message_encoding == "cdr" ||
@@ -104,6 +163,9 @@ function open_bag(path::AbstractString; scene::Scene=Scene(), fixed_frame=nothin
         for t in decode_tf(message_data(bag, m))
             add_transform!(tree, t; static)
         end
+    end
+    for t in static_transforms                     # mountings supplied by the user
+        add_transform!(tree, t; static=true)
     end
     finalize!(tree)
     wanted(id) = bag.channels[id].message_encoding == "cdr" &&
@@ -121,10 +183,12 @@ function open_bag(path::AbstractString; scene::Scene=Scene(), fixed_frame=nothin
         end
         fixed = something(fixed, "map")
     end
+    history = history === :auto ? _auto_history(bag, kind) : Float64(history)
     p = BagPlayer(bag, scene, tree, String(fixed), t0, t1, t0, 1.0, false, false, 1,
                   round(Int64, history * 1e9), Dict{UInt16, StreamingPointCloud}(),
                   Dict{UInt16, Tuple{LineLayer, Vector{Int}}}(), PoseTrack[],
-                  intensity_range === nothing ? nothing : Float64(intensity_range), 0, Set{String}())
+                  intensity_range === nothing ? nothing : Float64(intensity_range), 0, Set{String}(),
+                  missing_frames, _robot_frame(tree, String(fixed)), skip_gaps, 0)
     duration = max((t1 - t0) / 1e9, 1e-3)
     counts = Dict{UInt16, Int}()
     for m in bag.messages
@@ -153,22 +217,28 @@ function open_bag(path::AbstractString; scene::Scene=Scene(), fixed_frame=nothin
 end
 
 function _add_track!(p::BagPlayer, id, topic, k, marker_size)
-    times = Int64[]; poses = Rigid[]
+    times = Int64[]; poses = Rigid[]; connected = true
     for m in p.bag.messages
         m.channel == id || continue
         st = k == T_ODOM ? decode_odometry(message_data(p.bag, m)) : decode_pose_stamped(message_data(p.bag, m))
+        T = _to_fixed(p, st.parent, st.stamp)
+        T === nothing && continue
+        connected &= isempty(st.parent) || st.parent == p.fixed_frame ||
+                     lookup_transform(p.tree, p.fixed_frame, st.parent, st.stamp) !== nothing
         push!(times, st.stamp)
-        push!(poses, _to_fixed(p, st.parent, st.stamp) * Rigid(st.translation, st.rotation))
+        push!(poses, T * Rigid(st.translation, st.rotation))
     end
     isempty(times) && return
     perm = sortperm(times); times = times[perm]; poses = poses[perm]
     pts = [q.t for q in poses]
-    trail = length(pts) >= 2 ? trajectory(pts; times, width=2.5, name="$topic trail") :
+    # recording gaps: much longer than this topic's usual interval (and ≥ 1 s)
+    gap = length(times) >= 2 ? max(Int64(1_000_000_000), 10 * round(Int64, median(diff(times)))) : typemax(Int64)
+    trail = length(pts) >= 2 ? trajectory(pts; times, width=2.5, name="$topic trail", max_gap=gap) :
                                LineLayer(Polyline[]; name="$topic trail")
     ext = maximum(norm(q - pts[1]) for q in pts)
     marker = axes_marker(something(marker_size, clamp(ext / 25, 0.3, 5.0)); name="$topic pose")
     add!(p.scene, trail); add!(p.scene, marker)
-    push!(p.tracks, PoseTrack(topic, times, poses, trail, marker))
+    push!(p.tracks, PoseTrack(topic, times, poses, trail, marker, gap, connected))
 end
 
 function _add_gnss!(p::BagPlayer, id, topic)
@@ -185,12 +255,15 @@ function _add_gnss!(p::BagPlayer, id, topic)
     # Anchor the track to the robot: shift it so the first fix sits at the pose
     # track's position at that time (assumes the fixed frame's x/y point east/north).
     if !isempty(p.tracks) && !(p.scene.frame isa ENUFrame)
-        tr = p.tracks[1]
+        # anchor to a track whose frame really reaches the fixed frame
+        tr = something(findfirst(t -> t.connected, p.tracks), 1) |> i -> p.tracks[i]
         k = clamp(searchsortedlast(tr.times, fixes[1][1]), 1, length(tr.times))
         shift = tr.poses[k].t - pts[1]
         pts = [q + Vec3d(shift[1], shift[2], shift[3]) for q in pts]
     end
-    add!(p.scene, trajectory(pts; times=[t for (t, _, _, _) in fixes], colormap=:solid,
+    ft = [t for (t, _, _, _) in fixes]
+    gap = max(Int64(1_000_000_000), 10 * round(Int64, median(diff(ft))))   # break at recording gaps
+    add!(p.scene, trajectory(pts; times=ft, colormap=:solid, max_gap=gap,
                              color=Vec4f(1.0, 0.45, 0.85, 0.9), width=2, name="$topic (ENU)"))
 end
 
@@ -266,11 +339,14 @@ end
 function _process!(p::BagPlayer, m::MessageRef)
     if (layer = get(p.clouds, m.channel, nothing)) !== nothing
         st, frame, pts = decode_pointcloud2(message_data(p.bag, m); p.intensity_range)
-        push_scan!(layer, pts; pose=pose_matrix(_to_fixed(p, frame, st)))
+        T = _to_fixed(p, frame, st)
+        T === nothing && return
+        push_scan!(layer, pts; pose=pose_matrix(T))
         p.scans += 1
     elseif (pl = get(p.paths, m.channel, nothing)) !== nothing
         st, frame, pts = decode_path(message_data(p.bag, m))
         T = _to_fixed(p, frame, st)
+        T === nothing && return
         line = Polyline([Vec3f(T(q)) for q in pts], Vec4f(0.3, 0.95, 0.6, 1))
         with_update_lock() do
             empty!(pl[1].polylines); length(line.points) >= 2 && push!(pl[1].polylines, line)
@@ -286,6 +362,8 @@ function _update_markers!(p::BagPlayer)
             tr.poses[1]
         elseif k == length(tr.times)
             tr.poses[end]
+        elseif tr.times[k+1] - tr.times[k] > tr.gap        # inside a recording gap: nearest real pose
+            p.t - tr.times[k] <= tr.times[k+1] - p.t ? tr.poses[k] : tr.poses[k+1]
         else
             a = (p.t - tr.times[k]) / max(tr.times[k+1] - tr.times[k], 1)
             A, B = tr.poses[k], tr.poses[k+1]
@@ -304,6 +382,14 @@ Stops at the end, or wraps when `player.loop` is set.
 function tick!(p::BagPlayer, dt::Real)
     p.playing || return p
     t = p.t + round(Int64, dt * p.rate * 1e9)
+    # nothing recorded for a while ahead: jump to just before the next message
+    if p.skip_gaps && p.cursor <= length(p.bag.messages)
+        nxt = p.bag.messages[p.cursor].log_time
+        if nxt - p.t > 5_000_000_000 && nxt > t
+            t = nxt - 100_000_000
+            p.skipped += 1
+        end
+    end
     if t >= p.t1
         if p.loop
             return seek!(p, p.t0)
@@ -315,9 +401,9 @@ function tick!(p::BagPlayer, dt::Real)
 end
 
 "One-line status for the HUD."
-status(p::BagPlayer) = @sprintf("%s %.2f / %.2f s   x%g   frame %s   %d scans",
+status(p::BagPlayer) = @sprintf("%s %.2f / %.2f s   x%g   frame %s   %d scans%s",
                                 p.playing ? "PLAY " : "PAUSE", current_time(p), duration(p), p.rate,
-                                p.fixed_frame, p.scans)
+                                p.fixed_frame, p.scans, p.skipped > 0 ? "   ($(p.skipped) empty stretches skipped)" : "")
 
 """
     replay(path; kwargs...) -> Viewer

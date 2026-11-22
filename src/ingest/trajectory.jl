@@ -8,24 +8,35 @@ Turn a sequence of positions (a vector of 3-vectors, or a 3×N / N×3 matrix)
 into a line layer. With `colormap=:time` (default) the path is shaded from
 blue (start) to red (end) along `times` (or the sample index), which makes
 loops and revisits easy to read. Use `colormap=:solid` for one `color`.
+`max_gap` (in the units of `times`) breaks the line wherever consecutive
+samples are further apart, so recording gaps don't show as straight jumps.
 
 Positions go through `frame`, so GNSS fixes can be given as `(lon, lat, h)`
 with an [`ENUFrame`](@ref).
 """
 function trajectory(positions::AbstractVector; frame::LocalFrame=IdentityFrame(), times=nothing,
                     colormap::Symbol=:time, color=Vec4f(0.2, 0.8, 1, 1), width::Real=3.0,
-                    name="trajectory")
+                    name="trajectory", max_gap::Real=Inf)
     pts = [to_local32(frame, p) for p in positions]
     n = length(pts)
     n >= 2 || throw(ArgumentError("a trajectory needs at least two positions"))
-    if colormap == :solid
-        return LineLayer([Polyline(pts, Vec4f(color))]; name, width)
-    end
     t = times === nothing ? collect(1.0:n) : Float64.(times)
+    gap(i) = t[i+1] - t[i] > max_gap          # recording gap: don't draw a line across it
+    if colormap == :solid
+        lines = Polyline[]; start = 1
+        for i in 1:n-1
+            if gap(i)
+                i > start && push!(lines, Polyline(pts[start:i], Vec4f(color)))
+                start = i + 1
+            end
+        end
+        n > start && push!(lines, Polyline(pts[start:n], Vec4f(color)))
+        return LineLayer(lines; name, width)
+    end
     t0, t1 = extrema(t)
     span = t1 > t0 ? t1 - t0 : 1.0
     # one polyline per segment so each segment carries its own color
-    lines = [Polyline([pts[i], pts[i+1]], turbo(Float32((t[i] - t0) / span))) for i in 1:n-1]
+    lines = [Polyline([pts[i], pts[i+1]], turbo(Float32((t[i] - t0) / span))) for i in 1:n-1 if !gap(i)]
     return LineLayer(lines; name, width)
 end
 function trajectory(m::AbstractMatrix{<:Real}; kwargs...)

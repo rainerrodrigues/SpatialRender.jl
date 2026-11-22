@@ -23,15 +23,18 @@ struct TFSeries
 end
 
 """
-    FrameTree()
+    FrameTree(; max_gap=2.0)
 
 Frames and their transforms over time, filled from `/tf` and `/tf_static`
 (see [`add_transform!`](@ref)) and queried with [`lookup_transform`](@ref).
+Between two samples more than `max_gap` seconds apart (a recording gap), the
+nearest sample is used instead of interpolating motion that wasn't recorded.
 """
 struct FrameTree
     edges::Dict{String, TFSeries}        # child => series
+    max_gap::Int64                       # ns: interpolate only between samples this close
 end
-FrameTree() = FrameTree(Dict{String, TFSeries}())
+FrameTree(; max_gap::Real=2.0) = FrameTree(Dict{String, TFSeries}(), round(Int64, max_gap * 1e9))
 
 frames(tree::FrameTree) = union(Set(keys(tree.edges)), Set(e.parent for e in values(tree.edges)))
 parent_frame(tree::FrameTree, f::AbstractString) = (e = get(tree.edges, f, nothing); e === nothing ? nothing : e.parent)
@@ -65,13 +68,17 @@ function finalize!(tree::FrameTree)
 end
 
 # parent ← child at time t: interpolate between bracketing samples, hold at the ends
-function _edge(e::TFSeries, t::Int64)
+function _edge(e::TFSeries, t::Int64, max_gap::Int64)
     n = length(e.times)
     (e.static || n == 1) && return Rigid(e.trans[end], e.rots[end])
     k = searchsortedlast(e.times, t)
     k == 0 && return Rigid(e.trans[1], e.rots[1])
     k == n && return Rigid(e.trans[n], e.rots[n])
     t0, t1 = e.times[k], e.times[k+1]
+    if t1 - t0 > max_gap                 # recording gap: use the nearest real sample, don't invent motion
+        j = t - t0 <= t1 - t ? k : k + 1
+        return Rigid(e.trans[j], e.rots[j])
+    end
     a = t1 > t0 ? (t - t0) / (t1 - t0) : 0.0
     return Rigid(e.trans[k] + a * (e.trans[k+1] - e.trans[k]), slerp(e.rots[k], e.rots[k+1], a))
 end
@@ -80,7 +87,7 @@ end
 function _to_root(tree::FrameTree, f::String, t::Int64)
     T = Rigid(); cur = f; hops = 0
     while (e = get(tree.edges, cur, nothing)) !== nothing
-        T = _edge(e, t) * T
+        T = _edge(e, t, tree.max_gap) * T
         cur = e.parent
         (hops += 1) > 64 && error("frame tree has a cycle through $f")
     end

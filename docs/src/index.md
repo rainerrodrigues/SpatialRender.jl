@@ -75,11 +75,13 @@ Besides the unit tests, the readers were checked against public test data:
 | 33 LAS files: versions 1.0–1.4, point formats 0–3, 6 and 7, extra bytes, many VLRs, deliberately broken files | PDAL's test data | identical to LasIO.jl on every point where LasIO can read the file (positions within 0.12 mm); the header bounds agree elsewhere |
 | ASCII and binary STL (the same parts in both encodings), OBJ with normals and UVs | three.js examples | both encodings give identical triangles |
 | 20 GeoJSON files with nulls, BOMs, collections and invalid JSON | GDAL's test data | geometry counts match an independent count |
+| A 25-minute, 1.3 GB recording from an autonomous shuttle bus: 9 LiDAR topics (Velodyne VLP-16, localisation and safety scanners), 4 odometry sources, GNSS and TF | [nUWAy2](https://huggingface.co/datasets/xrkong/nuway_rosbag) (MIT) | all 70 topic counts match `metadata.yaml`; every point cloud decodes in four real field layouts; scans placed via TF register scan to scan (no convention error: the inverse transform fits 9× worse) |
 
-What the round found and fixed is listed in the CHANGELOG. Not yet checked
-against a real recording: `PointCloud2`, `Odometry` and `TF` messages from
-actual sensors (the bags above carry simple message types). A short bag from
-your own robot is the most useful next test.
+The shuttle recording showed what real logs look like: `/tf_static` not
+recorded (sensor frames missing from TF), odometry in an unconnected `odom`
+frame, recording gaps of several minutes, heavily throttled LiDAR topics and
+data captured in bursts. The player handles each of these (see the replay
+section); the fixes are listed in the CHANGELOG.
 
 ## Limits
 

@@ -792,6 +792,92 @@ end
     @test [message_data(f, m)[1] for m in f.messages] == [fill(0x02, 5); fill(0x01, 5)]   # payloads from the right file
 end
 
+@testset "real sensor recordings (nuway-like bag)" begin
+    using SpatialRender: StampedTransform, CDRWriter, cdr!, cdr_header!, cdr_string!, cdr_bytes, current_time, status
+    # trajectories and TF across a recording gap
+    tr = trajectory([Vec3d(i, 0, 0) for i in 1:6]; times=[1, 2, 3, 30, 31, 32], max_gap=5)
+    @test length(tr.polylines) == 4                                   # the 3 → 30 jump is not drawn
+    trs = trajectory([Vec3d(i, 0, 0) for i in 1:6]; times=[1, 2, 3, 30, 31, 32], max_gap=5, colormap=:solid)
+    @test length(trs.polylines) == 2 && length(trs.polylines[1].points) == 3
+    tree = FrameTree(; max_gap=2.0)
+    for (t, x) in ((0, 0.0), (1, 1.0), (100, 500.0))                 # 99 s gap between the last two samples
+        add_transform!(tree, StampedTransform(Int64(t) * 1_000_000_000, "map", "base_link", Vec3d(x, 0, 0), Quat()))
+    end
+    SpatialRender.finalize!(tree)
+    @test lookup_transform(tree, "map", "base_link", 500_000_000).t[1] ≈ 0.5      # normal: interpolated
+    @test lookup_transform(tree, "map", "base_link", 10_000_000_000).t[1] ≈ 1.0   # in the gap: nearest sample
+    @test lookup_transform(tree, "map", "base_link", 95_000_000_000).t[1] ≈ 500.0
+
+    # a Velodyne-style PointCloud2: float32 xyz + intensity, uint16 ring, float32 time at offset 18 (unaligned)
+    function velodyne_cloud(stamp, frame, pts)
+        cw = CDRWriter(); cdr_header!(cw, stamp, frame)
+        cdr!(cw, UInt32(1)); cdr!(cw, UInt32(length(pts)))
+        fields = (("x", 0, 7), ("y", 4, 7), ("z", 8, 7), ("intensity", 12, 7), ("ring", 16, 4), ("time", 18, 7))
+        cdr!(cw, UInt32(length(fields)))
+        for (n, o, dt) in fields
+            cdr_string!(cw, n); cdr!(cw, UInt32(o)); cdr!(cw, UInt8(dt)); cdr!(cw, UInt32(1))
+        end
+        cdr!(cw, UInt8(0)); cdr!(cw, UInt32(22)); cdr!(cw, UInt32(22 * length(pts))); cdr!(cw, UInt32(22 * length(pts)))
+        for (k, q) in enumerate(pts)
+            write(cw.io, Float32(q[1]), Float32(q[2]), Float32(q[3]), Float32(40), UInt16(k % 16), Float32(-0.05 * k))
+        end
+        cdr!(cw, UInt8(1))
+        return cdr_bytes(cw)
+    end
+    st, fr, v = decode_pointcloud2(velodyne_cloud(5, "lidar_front", [Vec3f(1, 2, 3), Vec3f(4, 5, 6)]))
+    @test v[2].position == Vec3f(4, 5, 6) && intensity(v[1]) ≈ 40 / 255 && v[1].classification == 1
+
+    # a bag shaped like the real shuttle recording
+    path = tmp("nuway_like.mcap")
+    w = MCAPWriter(path)
+    sid(n) = add_schema!(w, n)
+    c_tf = add_channel!(w, "/tf", sid("tf2_msgs/msg/TFMessage"))
+    c_pc = add_channel!(w, "/lidar/velodyne/front/cloud", sid("sensor_msgs/msg/PointCloud2"))
+    c_od = add_channel!(w, "/odometry/global", sid("nav_msgs/msg/Odometry"))
+    c_io = add_channel!(w, "/imu/odometry", sid("nav_msgs/msg/Odometry"))
+    c_fx = add_channel!(w, "/imu/nav_sat_fix", sid("sensor_msgs/msg/NavSatFix"))
+    enu = ENUFrame(-31.6, 115.66)
+    sec = 1_000_000_000
+    for k in [0:50; 250:300]                        # 0–5 s and 25–30 s: a 20 s recording gap, as in the real bag
+        t = k * 100_000_000; x = k / 10
+        write_message!(w, c_tf, t, encode_tf([StampedTransform(t, "map", "base_link", Vec3d(x, 0, 0), Quat())]))
+        write_message!(w, c_od, t, encode_odometry(StampedTransform(t, "map", "base_link", Vec3d(x, 0, 0), Quat())))
+        write_message!(w, c_io, t, encode_odometry(StampedTransform(t, "odom", "imu_link", Vec3d(x, 1, 0), Quat())))
+        k % 20 == 0 && write_message!(w, c_pc, t, velodyne_cloud(t, "lidar_front", [Vec3f(0, 0, 0)]))   # sparse: every 2 s
+        g = to_world(enu, Vec3d(x, 0, 0)); k % 5 == 0 && write_message!(w, c_fx, t, encode_navsatfix(t, "gps", g[2], g[1], 0.0))
+    end
+    close(w)
+
+    # both fallbacks announce themselves once, while open_bag shows the first moment
+    p = @test_logs (:warn, r"\"odom\".*untransformed") (:warn, r"\"lidar_front\" is not in the TF tree.*base_link") open_bag(path)
+    @test p.robot_frame == "base_link"
+    @test 4.9 <= p.history / sec <= 5.1                              # :auto → 2.5 × the 2 s scan interval
+    cloud = only(values(p.clouds))
+    seek!(p, 3.05)
+    # lidar_front is not in TF: drawn at base_link (x = time / 10)
+    seek!(p, 4.05)
+    @test sort([cloud.buffer[i].position[1] for i in 1:length(cloud)]) ≈ [0.0, 2.0, 4.0] atol = 1e-4
+    od = only(t for t in p.tracks if t.topic == "/odometry/global")
+    io = only(t for t in p.tracks if t.topic == "/imu/odometry")
+    @test od.connected && !io.connected
+    @test length(od.trail.polylines) == 50 + 50                      # no segment across the 20 s gap
+    gn = only(l for l in p.scene.layers if endswith(l.name, "(ENU)"))
+    @test length(gn.polylines) == 2                                  # GNSS broken at the gap too
+    @test gn.polylines[1].points[1] ≈ Vec3f(0, 0, 0) atol = 1e-3     # anchored to the connected track
+    # playback jumps over the silent stretch
+    seek!(p, 4.9); play!(p); tick!(p, 0.2); tick!(p, 0.2)
+    @test 24.9 <= current_time(p) <= 25.6 && occursin("skipped", status(p))
+    # real mountings supplied by the user take precedence over the fallback
+    q = open_bag(path; static_transforms=[StampedTransform(0, "base_link", "lidar_front", Vec3d(0, 0, 2), Quat())])
+    seek!(q, 0.05)
+    @test only(values(q.clouds)).buffer[1].position ≈ Vec3f(0, 0, 2)
+    # or skip data from unconnected frames
+    r = open_bag(path; missing_frames=:skip)
+    seek!(r, 4.05)
+    @test length(only(values(r.clouds))) == 0
+    @test_throws ArgumentError open_bag(path; missing_frames=:guess)
+end
+
 @testset "Aqua quality checks" begin
     Aqua.test_all(SpatialRender)
 end
