@@ -1,37 +1,97 @@
 name: CI
+
 on:
   push:
     branches: [main]
+    tags: ['*']
   pull_request:
   workflow_dispatch:
 
 concurrency:
+  # Cancel superseded runs on the same branch / PR
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   test:
-    name: Julia ${{ matrix.julia }} / ${{ matrix.os }}
+    name: Julia ${{ matrix.julia-version }} - ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    env:
+      JULIA_NUM_THREADS: 2
+      # Linux: Mesa's software rasteriser under Xvfb runs the GPU tests for real
+      LIBGL_ALWAYS_SOFTWARE: "1"
     strategy:
       fail-fast: false
       matrix:
-        julia: ["1.10", "1"]
+        # 1.10 is the oldest Julia SpatialRender supports (Project.toml [compat])
+        julia-version: ['1.10', '1.11', '1']
         os: [ubuntu-latest]
-    env:
-      JULIA_NUM_THREADS: 2
-      # Mesa's software rasteriser: the GPU tests (shader compile, offscreen
-      # render) run for real under Xvfb without a GPU.
-      LIBGL_ALWAYS_SOFTWARE: "1"
+        include:
+          - julia-version: '1'
+            os: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - name: OpenGL / X dependencies
-        run: sudo apt-get update && sudo apt-get install -y xvfb libgl1-mesa-dri libglx-mesa0 glslang-tools
+
+      - name: OpenGL / X dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb libgl1-mesa-dri libglx-mesa0
+
       - uses: julia-actions/setup-julia@v2
         with:
-          version: ${{ matrix.julia }}
+          version: ${{ matrix.julia-version }}
+
       - uses: julia-actions/cache@v2
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
         with:
-          prefix: xvfb-run -a -s "-screen 0 1280x1024x24"
+          # Linux needs a display for the GPU tests; macOS runners have one
+          prefix: ${{ runner.os == 'Linux' && 'xvfb-run -a -s "-screen 0 1280x1024x24"' || '' }}
+
+      - uses: julia-actions/julia-processcoverage@v1
+      - uses: codecov/codecov-action@v5
+        with:
+          files: lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
+          # Fail loudly on main (where the secret is available); forks can't see it
+          fail_ci_if_error: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+  benchmark:
+    # Core pipeline throughput on synthetic data (no GPU). Reported in the job
+    # summary; it doesn't fail the build.
+    runs-on: ubuntu-latest
+    env:
+      JULIA_NUM_THREADS: 4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1'
+      - uses: julia-actions/cache@v2
+      - uses: julia-actions/julia-buildpkg@v1
+      - name: Run the pipeline benchmark
+        run: |
+          JULIA_GLFW_PLATFORM=null julia --project benchmark/pipeline.jl | tee bench.txt
+          { echo '### Pipeline benchmark'; echo '```'; cat bench.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+  shader-lint:
+    # Every GLSL stage through the Khronos reference compiler (no GPU or display)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install glslang
+        run: sudo apt-get update && sudo apt-get install -y glslang-tools
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1'
+      - uses: julia-actions/cache@v2
+      - uses: julia-actions/julia-buildpkg@v1
+      - name: Lint shaders
+        run: |
+          JULIA_GLFW_PLATFORM=null julia --project -e '
+            using SpatialRender
+            results = validate_shaders(backend = :glslang)
+            for r in results
+                println(rpad(string(r.name, " ", r.stage), 20), r.ok ? "ok" : "FAILED")
+                r.ok || println(r.log)
+            end
+            all(r -> r.ok, results) || exit(1)'

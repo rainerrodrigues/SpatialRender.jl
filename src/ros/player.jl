@@ -196,8 +196,22 @@ end
 
 # --- time control --------------------------------------------------------------------
 
+"""
+    play!(player) -> player
+
+Start (or resume) playback; restarts from the beginning when at the end.
+Playback advances with [`tick!`](@ref), which the viewer calls every frame.
+"""
 play!(p::BagPlayer) = (p.t >= p.t1 && seek!(p, p.t0); p.playing = true; p)
+
+"""
+    pause!(player) -> player
+
+Stop advancing; the scene keeps showing the current moment.
+"""
 pause!(p::BagPlayer) = (p.playing = false; p)
+
+"Toggle between playing and paused."
 toggle!(p::BagPlayer) = p.playing ? pause!(p) : play!(p)
 "Current playback position in seconds from the start of the bag."
 current_time(p::BagPlayer) = (p.t - p.t0) / 1e9

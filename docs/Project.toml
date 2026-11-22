@@ -1,0 +1,6 @@
+[deps]
+Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+SpatialRender = "5111cc20-c906-4bb2-bdae-df40a8aed9d2"
+
+[compat]
+Documenter = "1"

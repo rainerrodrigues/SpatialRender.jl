@@ -1,6 +1,9 @@
 # SpatialRender.jl
 
 [![CI](https://github.com/rainerrodrigues/SpatialRender.jl/actions/workflows/ci.yml/badge.svg)](https://github.com/rainerrodrigues/SpatialRender.jl/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-dev-blue.svg)](https://rainerrodrigues.github.io/SpatialRender.jl/dev/)
+[![codecov](https://codecov.io/gh/rainerrodrigues/SpatialRender.jl/graph/badge.svg)](https://codecov.io/gh/rainerrodrigues/SpatialRender.jl)
+[![Aqua QA](https://raw.githubusercontent.com/JuliaTesting/Aqua.jl/master/badge.svg)](https://github.com/JuliaTesting/Aqua.jl)
 
 A native OpenGL renderer for **meshes, LiDAR point clouds, GIS vector layers and
 trajectories in one scene**, for diagnostic views in robotics and aerial
@@ -9,13 +12,15 @@ vertex buffers uploaded straight from Julia arrays, and a GPU-free core
 (ingestion, local frames, filters, BVH / k-d tree, culling, picking, camera)
 that runs and tests headless.
 
-![demo](docs/demo.png)
+![demo](docs/src/assets/demo.png)
 
-![live](docs/live.png)
+![live](docs/src/assets/live.png)
 
 *`examples/demo.jl` (top): a cycloidal-drive disc (CAD), 480k LiDAR points after
 outlier removal, GIS parcels reprojected from lon/lat into ENU, and a UAV
 survey trajectory colored by time. `examples/live.jl` (bottom): a rover streaming a simulated LiDAR, points colored by scan age.*
+
+The [documentation](https://rainerrodrigues.github.io/SpatialRender.jl/dev/) has a guide per topic and the full API reference.
 
 ## Quick start
 
@@ -77,6 +82,10 @@ julia -t auto --project=. examples/replay.jl my_bag/  # replay a ROS 2 bag (no a
 Bag replay: `Space` play / pause · `←` `→` seek 1 s (shift: 10 s) · `[` `]`
 half / double speed · `Home` restart.
 
+`render_offscreen` and `screenshot` need no window, and work even on a machine
+without a display (a server, CI): GLFW falls back to its null platform. Set
+`JULIA_GLFW_PLATFORM=null` there to silence GLFW's warnings.
+
 Pass `block = false` to get the `Viewer` back and drive it yourself
 (`step!(viewer)`), for example from a robot's update loop. Layers added to the
 scene while it is open are uploaded on the next frame.
@@ -114,7 +123,7 @@ seek!(p, 12.5); play!(p)
 open_viewer(p.scene; player = p)
 ```
 
-![replay](docs/replay.png)
+![replay](docs/src/assets/replay.png)
 
 *`examples/replay.jl`: a recorded rover bag at t = 12 s. LiDAR scans are placed
 through the TF chain map → odom → base_link → lidar at their own timestamps.

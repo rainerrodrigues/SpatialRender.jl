@@ -143,6 +143,16 @@ function decode_pointcloud2(d; intensity_range=nothing)
     irange = Float32(something(intensity_range,
         ii === nothing ? 1 : (PF_DATATYPES[ii[2]] <: AbstractFloat ? 255 : typemax(PF_DATATYPES[ii[2]]))))
     out = Vector{PointVertex}(undef, n)
+    k = _decode_points!(out, d, base, n, step, T, ox, oy, oz, ii, rgbf, ring, irange)
+    resize!(out, k)
+    return st, frame, out
+end
+
+# Function barrier: the coordinate type `T` and which optional fields exist are
+# known here at compile time, so the per-point loop has no dynamic calls (with
+# `T` only known at runtime, every coordinate read was a dynamic dispatch and
+# decoding ran ~50× slower).
+function _decode_points!(out, d, base, n, step, ::Type{T}, ox, oy, oz, ii, rgbf, ring, irange) where {T}
     k = 0
     GC.@preserve d begin
         p0 = pointer(d) + base
@@ -162,8 +172,7 @@ function decode_pointcloud2(d; intensity_range=nothing)
             out[k += 1] = PointVertex(Vec3f(x, y, z), it, rgba, cls)
         end
     end
-    resize!(out, k)
-    return st, frame, out
+    return k
 end
 
 @inline function _pf_load(p, dt)

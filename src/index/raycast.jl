@@ -91,7 +91,7 @@ end
 """
     raycast(items, ray; angle=0.003) -> RayHit
 
-Closest hit among `(layer, accel)` pairs (see [`pick_layer`](@ref)); layer
+Closest hit among `(layer, accel)` pairs (see `SpatialRender.pick_layer`); layer
 poses are applied, so the ray is given in the scene frame.
 """
 function raycast(items::AbstractVector, r::Ray; angle::Real=0.003)

@@ -40,7 +40,7 @@ parent_frame(tree::FrameTree, f::AbstractString) = (e = get(tree.edges, f, nothi
     add_transform!(tree, t::StampedTransform; static=false)
 
 Record `parent ← child` at `t.stamp`. Samples may arrive in any order; call
-[`finalize!`](@ref) once after loading to sort them. A frame that changes
+`SpatialRender.finalize!` once after loading to sort them. A frame that changes
 parent keeps the first one (tf2 forbids reparenting) and a warning is shown.
 """
 function add_transform!(tree::FrameTree, t::StampedTransform; static::Bool=false)

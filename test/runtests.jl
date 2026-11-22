@@ -1,3 +1,4 @@
+using Aqua
 using SpatialRender
 using SpatialRender: AABB, center, radius, ntriangles, triangle, ray_box, nchunks, rotate,
                      rotation_matrix, forward, target, mouse_button!, cursor!, scroll!, key!,
@@ -714,6 +715,10 @@ function read_png(path)
         end
     end
     return img
+end
+
+@testset "Aqua quality checks" begin
+    Aqua.test_all(SpatialRender)
 end
 
 @testset "PNG writer" begin
