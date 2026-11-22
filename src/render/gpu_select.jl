@@ -60,13 +60,17 @@ choice wins), or when `SPATIALRENDER_GPU_AUTOCONFIG=0`. `candidates` are
 adapter-name substrings to try in order (default: an explicitly set
 `MESA_D3D12_DEFAULT_ADAPTER_NAME`, else NVIDIA, AMD, Intel, then Mesa's
 default adapter).
+
+`probe` (returns the renderer string of a fresh context, or `nothing`),
+`reinit` and `wsl` exist so tests can simulate drivers; leave them alone.
 """
-function configure_gpu!(; candidates=nothing, force::Bool=false)
+function configure_gpu!(; candidates=nothing, force::Bool=false,
+                        probe=_probe_renderer, reinit=_reinit_glfw, wsl::Bool=is_wsl_gpu())
     GPU_CONFIGURED[] && !force && return GPU_SELECTION[]
     GPU_CONFIGURED[] = true
     if get(ENV, "SPATIALRENDER_GPU_AUTOCONFIG", "1") == "0"
         return GPU_SELECTION[] = "auto-configuration disabled (SPATIALRENDER_GPU_AUTOCONFIG=0)"
-    elseif !is_wsl_gpu()
+    elseif !wsl
         return GPU_SELECTION[] = "not WSL: using the system OpenGL driver"
     elseif haskey(ENV, "GALLIUM_DRIVER") && !force
         return GPU_SELECTION[] = "GALLIUM_DRIVER=$(ENV["GALLIUM_DRIVER"]) set by the user"
@@ -83,14 +87,14 @@ function configure_gpu!(; candidates=nothing, force::Bool=false)
         ENV["GALLIUM_DRIVER"] = "d3d12"
         isempty(name) ? delete!(ENV, "MESA_D3D12_DEFAULT_ADAPTER_NAME") :
                         (ENV["MESA_D3D12_DEFAULT_ADAPTER_NAME"] = name)
-        _reinit_glfw()
-        r = _probe_renderer()
+        reinit()
+        r = probe()
         if r !== nothing && !_is_software(r)
             return GPU_SELECTION[] = "WSL: $r (GALLIUM_DRIVER=d3d12" *
                 (isempty(name) ? ")" : ", MESA_D3D12_DEFAULT_ADAPTER_NAME=$name)")
         end
     end
     restore!()
-    _reinit_glfw()
+    reinit()
     return GPU_SELECTION[] = "WSL: no D3D12 adapter worked (tried $(join(repr.(candidates), ", "))); using the CPU"
 end

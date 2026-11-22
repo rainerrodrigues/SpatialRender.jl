@@ -85,7 +85,10 @@ void main() {
     else if (u_color_mode == 3) c = a_rgba.rgb;
     else {
         float age = float((uint(u_seq) - a_flags) & 255u) / max(u_max_age, 1.0);
-        c = turbo(1.0 - clamp(age, 0.0, 1.0)) * (1.0 - 0.55 * clamp(age, 0.0, 1.0));
+        // newest bright red-orange, older through yellow and green to faded blue
+        // (the very end of Turbo is a dark maroon that vanishes on a dark background)
+        age = clamp(age, 0.0, 1.0);
+        c = turbo(0.88 - 0.78 * age) * (1.0 - 0.5 * age);
     }
     if (gl_VertexID == u_highlight) { c = vec3(1.0, 0.1, 0.9); px = max(px * 3.0, 9.0); }
     gl_PointSize = clamp(px, 1.0, 64.0);

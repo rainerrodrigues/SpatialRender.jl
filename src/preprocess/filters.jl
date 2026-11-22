@@ -68,6 +68,7 @@ end
 keep_mask(f::StatisticalOutlierFilter, pc::PointCloud) = statistical_outlier_mask(pc; f.k, f.nsigma)
 
 function statistical_outlier_mask(pc::PointCloud; k::Int=8, nsigma::Real=2.0)
+    k >= 1 || throw(ArgumentError("k must be at least 1"))
     n = length(pc)
     n <= k && return trues(n)
     g = GridNeighbors(Positions(pc.vertices))
@@ -108,6 +109,8 @@ end
 keep_mask(f::RadiusOutlierFilter, pc::PointCloud) = radius_outlier_mask(pc; f.radius, f.min_neighbors)
 
 function radius_outlier_mask(pc::PointCloud; radius::Real, min_neighbors::Int=4)
+    radius > 0 || throw(ArgumentError("radius must be positive"))
+    min_neighbors >= 0 || throw(ArgumentError("min_neighbors must be non-negative"))
     g = GridNeighbors(Positions(pc.vertices), Float32(radius))
     return BitVector(_radius_keep(g, pc.vertices, Float32(radius), min_neighbors))
 end
@@ -201,6 +204,8 @@ least squares on the inliers. Returns `nothing` when no plane is found.
 """
 function fit_ground_plane(pc::PointCloud; threshold::Real=0.15, iterations::Int=200,
                           max_tilt::Real=15.0, seed::Int=1)
+    threshold > 0 || throw(ArgumentError("threshold must be positive"))
+    iterations >= 1 || throw(ArgumentError("iterations must be at least 1"))
     pts = [Vec3d(v.position) for v in pc.vertices]
     n = length(pts)
     n < 3 && return nothing

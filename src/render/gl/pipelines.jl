@@ -27,7 +27,7 @@ Base.@kwdef mutable struct RenderSettings
     edl_strength::Float32 = 1.0f0
     edl_radius::Float32 = 1.4f0
     hud::Bool = true
-    highlight::Tuple{Any, Int} = (nothing, 0)   # (layer, 1-based point index)
+    highlight::Tuple{Union{Nothing, Layer}, Int} = (nothing, 0)   # (layer, 1-based point index)
 end
 
 struct FrameContext

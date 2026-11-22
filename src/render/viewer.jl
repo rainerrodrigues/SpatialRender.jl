@@ -1,5 +1,5 @@
-# Native GLFW window, input wiring, the interactive loop, and offscreen
-# rendering / screenshots.
+# Native GLFW window, input wiring and the interactive loop. Offscreen rendering
+# is in offscreen.jl, the PNG writer in png.jl.
 
 const CONTEXT_COUNTER = Ref{UInt}(0)
 
@@ -76,6 +76,8 @@ mutable struct Viewer
     annotations::Union{Nothing, Annotations}
     player::Any                             # a BagPlayer (or nothing), ticked every frame
     fps::Float64                            # smoothed frame rate for the overlay
+    last_time::Float64                      # wall clock of the previous frame (NaN before the first)
+    title_time::Float64                     # last overlay / title refresh
 end
 
 const KEYMAP = Dict(GLFW.KEY_W => :w, GLFW.KEY_A => :a, GLFW.KEY_S => :s, GLFW.KEY_D => :d,
@@ -99,18 +101,21 @@ SpatialRender controls
 """
 
 """
-    open_viewer(scene; width=1280, height=800, title, block=true, camera=nothing, settings) -> Viewer
+    open_viewer(scene; width=1280, height=800, title, block=true, camera=nothing, settings,
+                vsync=true, player=nothing, visible=true) -> Viewer
 
 Open a native window and render `scene` interactively (see `HELP` for
-controls; press H in the window). With `block=false` the function returns
+controls; press H in the window). `visible=false` keeps the window hidden
+(automated tests, scripted captures). With `block=false` the function returns
 the `Viewer` immediately; call `run!(viewer)` or `step!(viewer)` to drive
 it, e.g. from a robot's own update loop.
 """
 function open_viewer(scene::Scene; width::Integer=1280, height::Integer=800,
                      title::AbstractString="SpatialRender", block::Bool=true,
                      camera::Union{Nothing, Camera}=nothing, settings::RenderSettings=RenderSettings(),
-                     vsync::Bool=true, player=nothing)
-    _window_hints()
+                     vsync::Bool=true, player=nothing, visible::Bool=true)
+    width > 0 && height > 0 || throw(ArgumentError("window size must be positive, got $(width)×$(height)"))
+    _window_hints(; visible)
     win = GLFW.CreateWindow(width, height, title)
     ctx = _make_current(win)
     GLFW.SwapInterval(vsync ? 1 : 0)
@@ -122,34 +127,51 @@ function open_viewer(scene::Scene; width::Integer=1280, height::Integer=800,
     ctl = CameraController(cam)
     fw, fh = GLFW.GetFramebufferSize(win)
     set_viewport!(ctl, fw, fh)
-    v = Viewer(win, r, ctl, ctx, NO_HIT, true, false, nothing, nothing, player, 0.0)
+    v = Viewer(win, r, ctl, ctx, NO_HIT, true, false, nothing, nothing, player, 0.0, NaN, 0.0)
     _install_callbacks!(v)
     block || return v
     run!(v)
     return v
 end
 
+# An exception inside a GLFW callback would unwind through C into the render
+# loop and close the window; report it and keep the viewer running instead.
+function _safely(f, what)
+    try
+        f()
+    catch e
+        e isa InterruptException && rethrow()
+        @error "SpatialRender viewer: error while handling $what" exception=(e, catch_backtrace()) maxlog=10
+    end
+    return nothing
+end
+
+function _on_mouse_button(v::Viewer, button, action, mods)
+    ctl = v.controller
+    b = button == GLFW.MOUSE_BUTTON_LEFT ? :left : button == GLFW.MOUSE_BUTTON_RIGHT ? :right : :middle
+    shift = (Int(mods) & Int(GLFW.MOD_SHIFT)) != 0
+    ev = mouse_button!(ctl, b, action == GLFW.PRESS; shift, time=time())
+    x, y = ctl.input.cursor
+    if ev == :double_click
+        pick!(v, x, y; set_pivot=true)
+    elseif ev == :click && v.measuring
+        measure_click!(v, x, y)
+    end
+end
+
 function _install_callbacks!(v::Viewer)
     win = v.window; ctl = v.controller
-    GLFW.SetFramebufferSizeCallback(win, (_, w, h) -> set_viewport!(ctl, w, h))
-    GLFW.SetCursorPosCallback(win, (_, x, y) -> begin
+    GLFW.SetFramebufferSizeCallback(win, (_, w, h) -> _safely(() -> set_viewport!(ctl, w, h), "a resize"))
+    GLFW.SetCursorPosCallback(win, (_, x, y) -> _safely("mouse motion") do
         # cursor coordinates are in window units; scale to framebuffer pixels
         sx, sy = _content_scale(win)
         cursor!(ctl, x * sx, y * sy)
     end)
-    GLFW.SetScrollCallback(win, (_, dx, dy) -> scroll!(ctl, dy))
-    GLFW.SetMouseButtonCallback(win, (_, button, action, mods) -> begin
-        b = button == GLFW.MOUSE_BUTTON_LEFT ? :left : button == GLFW.MOUSE_BUTTON_RIGHT ? :right : :middle
-        shift = (Int(mods) & Int(GLFW.MOD_SHIFT)) != 0
-        ev = mouse_button!(ctl, b, action == GLFW.PRESS; shift, time=time())
-        x, y = ctl.input.cursor
-        if ev == :double_click
-            pick!(v, x, y; set_pivot=true)
-        elseif ev == :click && v.measuring
-            measure_click!(v, x, y)
-        end
-    end)
-    GLFW.SetKeyCallback(win, (_, key, scancode, action, mods) -> _on_key(v, key, action))
+    GLFW.SetScrollCallback(win, (_, dx, dy) -> _safely(() -> scroll!(ctl, dy), "scrolling"))
+    GLFW.SetMouseButtonCallback(win, (_, button, action, mods) ->
+        _safely(() -> _on_mouse_button(v, button, action, mods), "a mouse button"))
+    GLFW.SetKeyCallback(win, (_, key, scancode, action, mods) ->
+        _safely(() -> _on_key(v, key, action), "a key press"))
 end
 
 function _content_scale(win)
@@ -205,9 +227,9 @@ function _on_key(v::Viewer, key, action)
         v.measuring = !v.measuring
         v.measuring || _cancel_pending!(v)
         @info v.measuring ? "measure mode: click two points (Backspace undoes, R exits)" : "measure mode off"
-    elseif key == GLFW.KEY_BACKSPACE && v.annotations !== nothing
-        v.pending === nothing || (v.pending = nothing)
-        undo!(v.annotations)
+    elseif key == GLFW.KEY_BACKSPACE && (ann = v.annotations) !== nothing
+        v.pending = nothing
+        undo!(ann)
     elseif key == GLFW.KEY_H
         print(HELP)
     elseif key == GLFW.KEY_I
@@ -265,10 +287,12 @@ end
 
 "The viewer's annotation layer, created on first use."
 function annotations!(v::Viewer)
-    if v.annotations === nothing
-        v.annotations = add!(v.renderer.scene, Annotations(name="measurements"))
+    a = v.annotations
+    if a === nothing
+        a = add!(v.renderer.scene, Annotations(name="measurements"))
+        v.annotations = a
     end
-    return v.annotations
+    return a::Annotations
 end
 
 _cancel_pending!(v::Viewer) = v.pending === nothing || (v.pending = nothing; undo!(annotations!(v)))
@@ -288,7 +312,7 @@ function measure_click!(v::Viewer, x::Real, y::Real)
         annotate!(a, hit.position, ""; color=Vec4f(1, 0.85, 0.2, 1))   # provisional marker
         return nothing
     end
-    p = v.pending
+    p = v.pending::Vec3f
     v.pending = nothing
     undo!(a)                                                          # replace the marker
     res = measure!(a, p, hit.position)
@@ -310,7 +334,8 @@ function step!(v::Viewer)
     GLFW.PollEvents()
     _make_current_if_needed(v)
     now = time()
-    dt = min(now - _last_time(v, now), 0.1)
+    dt = isnan(v.last_time) ? 0.0 : min(now - v.last_time, 0.1)
+    v.last_time = now
     update!(v.controller, dt)
     v.player === nothing || tick!(v.player, dt)
     fw, fh = GLFW.GetFramebufferSize(v.window)
@@ -320,8 +345,6 @@ function step!(v::Viewer)
     return true
 end
 
-const _LAST_TIME = IdDict{Viewer, Float64}()
-_last_time(v, now) = (t = get(_LAST_TIME, v, now); _LAST_TIME[v] = now; t)
 
 function _make_current_if_needed(v::Viewer)
     if CURRENT_CONTEXT[] != v.context
@@ -330,12 +353,11 @@ function _make_current_if_needed(v::Viewer)
     end
 end
 
-const _TITLE_T = Ref(0.0)
 function _title!(v::Viewer, st, dt)
-    v.fps = v.fps == 0 ? 1 / max(dt, 1e-6) : 0.9 * v.fps + 0.1 / max(dt, 1e-6)
+    dt > 0 && (v.fps = v.fps == 0 ? 1 / dt : 0.9 * v.fps + 0.1 / dt)
     t = time()
-    t - _TITLE_T[] < 0.25 && return                  # overlay text 4× per second
-    _TITLE_T[] = t
+    t - v.title_time < 0.25 && return                # overlay text 4× per second
+    v.title_time = t
     mode = v.controller.mode == OrbitMode ? "orbit" : "fly"
     stats = @sprintf("%s  %.0f fps  %s pts  %s tris  %s segs%s", mode, v.fps, _si(st.points),
                      _si(st.triangles), _si(st.segments), v.measuring ? "  [measure]" : "")
@@ -361,128 +383,6 @@ function Base.close(v::Viewer)
     release!(v.renderer)
     drop_context_programs!(v.context)
     GLFW.DestroyWindow(v.window)
-    delete!(_LAST_TIME, v)
     v.open = false
     return
-end
-
-# ---------------------------------------------------------------------------
-# Offscreen rendering
-
-"Read the current framebuffer as an `h×w` matrix of RGB tuples (top row first)."
-function read_framebuffer(w::Integer, h::Integer)
-    buf = Vector{UInt8}(undef, 3w * h)
-    glPixelStorei(GL_PACK_ALIGNMENT, 1)
-    glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, buf)
-    img = Matrix{NTuple{3, UInt8}}(undef, h, w)
-    for y in 1:h, x in 1:w
-        k = 3 * ((h - y) * w + (x - 1))
-        img[y, x] = (buf[k+1], buf[k+2], buf[k+3])
-    end
-    return img
-end
-
-"""
-    render_offscreen(scene; width=1024, height=768, camera=nothing, settings) -> Matrix{NTuple{3,UInt8}}
-
-Render one frame into a hidden framebuffer and return it as an image
-(rows top to bottom). With `camera=nothing` the camera frames the scene
-from the south-west, 30° above the horizon. Useful for CI snapshots and
-batch reports.
-"""
-function render_offscreen(scene::Scene; width::Integer=1024, height::Integer=768,
-                          camera::Union{Nothing, Camera}=nothing,
-                          settings::RenderSettings=RenderSettings())
-    with_hidden_context() do
-        fbo = Ref{GLuint}(0); rb = Ref{GLuint}(0); db = Ref{GLuint}(0)
-        glGenFramebuffers(1, fbo); glBindFramebuffer(GL_FRAMEBUFFER, fbo[])
-        glGenRenderbuffers(1, rb); glBindRenderbuffer(GL_RENDERBUFFER, rb[])
-        glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, width, height)
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, rb[])
-        glGenRenderbuffers(1, db); glBindRenderbuffer(GL_RENDERBUFFER, db[])
-        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width, height)
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, db[])
-        glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE ||
-            error("offscreen framebuffer incomplete")
-        r = Renderer(scene; settings)
-        cam = camera
-        if cam === nothing
-            b = r.box
-            c = isempty(b) ? Vec3d(0, 0, 0) : Vec3d(center(b))
-            cam = Camera(position = c + Vec3d(-1, -1, 0.82), target = c, aspect = width / height)
-            frame!(cam, b)
-        end
-        render_frame!(r, cam, width, height)
-        # out-of-core layers: load what the view asks for, redraw, until stable
-        # (one extra frame per octree level, not per node)
-        for _ in 1:64
-            streaming(r) || break
-            drain!(r)
-            render_frame!(r, cam, width, height)
-        end
-        glFinish()
-        img = read_framebuffer(width, height)
-        release!(r)
-        glBindFramebuffer(GL_FRAMEBUFFER, 0)
-        glDeleteRenderbuffers(1, rb); glDeleteRenderbuffers(1, db); glDeleteFramebuffers(1, fbo)
-        return img
-    end
-end
-
-"""
-    screenshot(path, scene; kwargs...) -> path
-
-[`render_offscreen`](@ref) and save the image as PNG.
-"""
-screenshot(path::AbstractString, scene::Scene; kwargs...) = write_png(path, render_offscreen(scene; kwargs...))
-
-# ---------------------------------------------------------------------------
-# PNG writer (zlib from Julia's own Zlib_jll; no image package)
-
-const _CRC_TABLE = let t = Vector{UInt32}(undef, 256)
-    for n in 0:255
-        c = UInt32(n)
-        for _ in 1:8
-            c = (c & 1) != 0 ? 0xedb88320 ⊻ (c >> 1) : c >> 1
-        end
-        t[n+1] = c
-    end
-    t
-end
-function _crc32(data)
-    c = 0xffffffff
-    for b in data
-        c = _CRC_TABLE[((c ⊻ b) & 0xff)+1] ⊻ (c >> 8)
-    end
-    return c ⊻ 0xffffffff
-end
-
-"""
-    write_png(path, img::Matrix{NTuple{3,UInt8}}) -> path
-"""
-function write_png(path::AbstractString, img::AbstractMatrix{NTuple{3, UInt8}})
-    h, w = size(img)
-    raw = Vector{UInt8}(undef, h * (1 + 3w))
-    k = 0
-    for y in 1:h
-        # filter "Up" (byte minus the byte above) for all rows but the first:
-        # rendered images have large flat areas, which then compress well
-        raw[k += 1] = y == 1 ? 0x00 : 0x02
-        for x in 1:w, c in 1:3
-            v = img[y, x][c]
-            raw[k += 1] = y == 1 ? v : v - img[y-1, x][c]
-        end
-    end
-    idat = zlib_compress(raw; level=6)
-    chunk(io, typ, data) = (write(io, hton(UInt32(length(data)))); td = vcat(Vector{UInt8}(typ), data);
-                            write(io, td); write(io, hton(_crc32(td))))
-    open(path, "w") do io
-        write(io, UInt8[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
-        ihdr = IOBuffer()
-        write(ihdr, hton(UInt32(w)), hton(UInt32(h)), UInt8(8), UInt8(2), UInt8(0), UInt8(0), UInt8(0))
-        chunk(io, "IHDR", take!(ihdr))
-        chunk(io, "IDAT", idat)
-        chunk(io, "IEND", UInt8[])
-    end
-    return path
 end

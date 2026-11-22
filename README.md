@@ -20,7 +20,14 @@ that runs and tests headless.
 outlier removal, GIS parcels reprojected from lon/lat into ENU, and a UAV
 survey trajectory colored by time. `examples/live.jl` (bottom): a rover streaming a simulated LiDAR, points colored by scan age.*
 
-The [documentation](https://rainerrodrigues.github.io/SpatialRender.jl/dev/) has a guide per topic and the full API reference.
+The [documentation](https://rainerrodrigues.github.io/SpatialRender.jl/dev/) has step-by-step
+tutorials ([getting started](https://rainerrodrigues.github.io/SpatialRender.jl/dev/tutorials/getting_started/),
+[point clouds](https://rainerrodrigues.github.io/SpatialRender.jl/dev/tutorials/point_clouds/),
+[maps and frames](https://rainerrodrigues.github.io/SpatialRender.jl/dev/tutorials/maps_and_frames/),
+[live robot data](https://rainerrodrigues.github.io/SpatialRender.jl/dev/tutorials/live_robot/),
+[replaying ROS 2 bags](https://rainerrodrigues.github.io/SpatialRender.jl/dev/tutorials/replay_bags/)),
+a guide per topic and the full API reference. The tutorials' code runs on every
+documentation build, and their images are its output.
 
 ## Quick start
 

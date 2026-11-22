@@ -57,3 +57,19 @@ Tested on a real 25-minute autonomous-shuttle recording (nUWAy2), which led to:
   LiDAR topics; `skip_gaps = true` jumps over stretches without messages.
 - The GNSS track is anchored to a pose track whose frame really reaches the
   fixed frame.
+
+Robustness and documentation:
+
+- Five tutorials (getting started, point clouds, maps and frames, live robot
+  data, replaying bags) whose code runs during every docs build.
+- JET static analysis is clean and runs in CI; the octree index is validated
+  with clear errors (bad JSON, wrong version, truncated `nodes.bin`, …).
+- Arguments are validated up front (filters, octree, camera, player, viewer).
+- Viewer: an error in a key or mouse handler is logged instead of closing the
+  window; per-viewer timers (no shared global state); `open_viewer(...;
+  visible = false)`; tested end to end in a hidden window.
+- Layers print as one line (`PointCloud "ground" (60000 points)`).
+- `save_las` writes colour / GPS time only when present (point formats 0–3),
+  so colourless clouds no longer come back as white RGB.
+- Scan-age colouring starts from bright red-orange (the dark end of the
+  colormap was invisible on the dark background).

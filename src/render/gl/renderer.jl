@@ -108,8 +108,8 @@ function sync!(r::Renderer)
     end
     structural || return r
     r.box = world_box(r)
-    if r.grid !== nothing
-        release!(r.grid[2]); r.grid = nothing
+    if (old = r.grid) !== nothing
+        release!(old[2]); r.grid = nothing
     end
     b = r.box
     rad = isempty(b) ? 10.0 : max(Float64(radius(b)), 1.0)
@@ -195,7 +195,8 @@ function _render_frame!(r::Renderer, cam::Camera, w::Integer, h::Integer)
     glEnable(GL_BLEND)                           # pass 3: anti-aliased lines
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
     glDepthMask(GL_FALSE)
-    s.grid && r.grid !== nothing && draw!(r.grid[2], r.grid[1], r.lines, fc, s)
+    grid = r.grid
+    s.grid && grid !== nothing && draw!(grid[2], grid[1], r.lines, fc, s)
     glDepthMask(GL_TRUE)
     for l in r.scene.layers
         l isa LineLayer && l.visible && (ns += draw!(r.gpu[l], l, r.lines, fc, s))
@@ -272,7 +273,7 @@ function _edl_pass!(r::Renderer, cam::Camera)
     glActiveTexture(GL_TEXTURE0)
 end
 
-_grid_box(r::Renderer) = r.grid === nothing || !r.settings.grid ? AABB() : r.grid[2].box
+_grid_box(r::Renderer) = (g = r.grid; g === nothing || !r.settings.grid ? AABB() : g[2].box)
 
 function release!(r::Renderer)
     if r.hud_gpu isa GPUHud
@@ -280,6 +281,6 @@ function release!(r::Renderer)
     end
     r.edl isa EDLTarget && (release!(r.edl); r.edl = nothing)
     foreach(release!, values(r.gpu)); empty!(r.gpu)
-    r.grid === nothing || release!(r.grid[2])
+    (g = r.grid) === nothing || release!(g[2])
     release!(r.corners)
 end

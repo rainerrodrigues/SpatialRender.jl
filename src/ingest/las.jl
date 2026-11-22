@@ -197,14 +197,19 @@ end
 """
     save_las(path, pc; frame=IdentityFrame(), scale=0.001)
 
-Write a LAS 1.2 file (point format 3 when the cloud has GPS times, otherwise
-2). Positions are mapped back to world coordinates through `frame` and
+Write a LAS 1.2 file: point format 0, with GPS time 1, with colour 2, with
+both 3 (colour is written only when some point isn't plain white).
+Positions are mapped back to world coordinates through `frame` and
 quantised to `scale` metres.
 """
 function save_las(path::AbstractString, pc::PointCloud; frame::LocalFrame=IdentityFrame(),
                   scale::Real=0.001)
-    fmt = isempty(pc.gps_time) ? 2 : 3
-    rl = fmt == 2 ? 26 : 34
+    # colour only when the cloud has some (writing white makes every reader
+    # believe the file is coloured); GPS time only when present
+    has_rgb = any(v -> v.rgba != (0xff, 0xff, 0xff, 0xff), pc.vertices)
+    has_gps = !isempty(pc.gps_time)
+    fmt = has_rgb ? (has_gps ? 3 : 2) : (has_gps ? 1 : 0)
+    rl = (20, 28, 26, 34)[fmt+1]
     n = length(pc)
     world = [to_world(frame, Vec3d(v.position)) for v in pc.vertices]
     lo = n == 0 ? Vec3d(0, 0, 0) : reduce((a, b) -> min.(a, b), world)
@@ -222,8 +227,8 @@ function save_las(path::AbstractString, pc::PointCloud; frame::LocalFrame=Identi
             q = round.(Int32, (world[i] - off) / s)
             write(io, q[1], q[2], q[3], v.intensity,
                   UInt8(0b00001001), v.classification & 0x1f, Int8(0), UInt8(0), UInt16(0))
-            fmt == 3 && write(io, pc.gps_time[i])
-            write(io, UInt16(v.rgba[1]) << 8, UInt16(v.rgba[2]) << 8, UInt16(v.rgba[3]) << 8)
+            has_gps && write(io, pc.gps_time[i])
+            has_rgb && write(io, UInt16(v.rgba[1]) << 8, UInt16(v.rgba[2]) << 8, UInt16(v.rgba[3]) << 8)
         end
     end
     return path

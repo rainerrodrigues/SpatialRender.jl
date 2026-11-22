@@ -46,6 +46,10 @@ centre (an `OffsetFrame` recorded in `octree.json`).
 function build_octree(source, out_dir::AbstractString; node_capacity::Int=50_000,
                       bucket_points::Int=4_000_000, spacing_div::Int=128,
                       chunk::Int=1_000_000, seed::Int=1)
+    node_capacity >= 1 || throw(ArgumentError("node_capacity must be at least 1"))
+    bucket_points >= 1 || throw(ArgumentError("bucket_points must be at least 1"))
+    spacing_div >= 2 || throw(ArgumentError("spacing_div must be at least 2"))
+    chunk >= 1 || throw(ArgumentError("chunk must be at least 1"))
     src = _octree_source(source, chunk)
     mkpath(out_dir)
     n = src.n

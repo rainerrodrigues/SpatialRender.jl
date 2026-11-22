@@ -95,3 +95,25 @@ jobs:
                 r.ok || println(r.log)
             end
             all(r -> r.ok, results) || exit(1)'
+
+  jet:
+    # Static analysis: fails when JET finds possible errors (undefined names,
+    # calls that can't dispatch, nothing-related mistakes). Pinned to 1.12
+    # because JET tracks Julia's compiler internals and lags new releases.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1.12'
+      - uses: julia-actions/cache@v2
+      - name: Run JET
+        run: |
+          JULIA_GLFW_PLATFORM=null julia -e '
+            using Pkg
+            Pkg.activate(temp = true)
+            Pkg.develop(path = pwd()); Pkg.add("JET")
+            using JET, SpatialRender
+            r = JET.report_package(SpatialRender; target_modules = (SpatialRender,), toplevel_logger = nothing)
+            show(stdout, MIME"text/plain"(), r)
+            isempty(JET.get_reports(r)) || exit(1)'

@@ -16,6 +16,9 @@ that runs and tests headless.
 outlier removal, GIS parcels reprojected from lon/lat into ENU, and a UAV
 survey trajectory colored by time. `examples/live.jl` (bottom): a rover streaming a simulated LiDAR, points colored by scan age.*
 
+New here? Start with the [tutorials](tutorials/getting_started.md): five
+short walk-throughs whose code runs on every documentation build.
+
 ## Installation
 
 ```julia

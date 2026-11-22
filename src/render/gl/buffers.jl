@@ -41,7 +41,7 @@ function new_vao()
     return id[]
 end
 
-_off(T, f::Symbol) = Ptr{Cvoid}(fieldoffset(T, Base.fieldindex(T, f)))
+_off(T::DataType, f::Symbol) = Ptr{Cvoid}(fieldoffset(T, Base.fieldindex(T, f)))
 
 function _float_attr(loc, n, T, field; type=GL_FLOAT, normalized=GL_FALSE, divisor=0)
     glEnableVertexAttribArray(loc)

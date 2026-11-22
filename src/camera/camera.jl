@@ -20,6 +20,8 @@ end
 
 function Camera(; position=Vec3d(10, -10, 8), target=Vec3d(0, 0, 0), fov=deg2rad(50.0),
                 near=0.05, far=1e4, aspect=16 / 9)
+    0 < fov < π || throw(ArgumentError("fov must be between 0 and π radians, got $fov"))
+    0 < near < far || throw(ArgumentError("need 0 < near < far, got near=$near, far=$far"))
     c = Camera(Vec3d(position), Quat(), 1.0, fov, near, far, false, aspect)
     look_at!(c, Vec3d(target))
     return c

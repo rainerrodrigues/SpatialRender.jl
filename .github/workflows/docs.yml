@@ -17,6 +17,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: OpenGL / X dependencies
+        # the tutorials render their images while the docs build
+        run: sudo apt-get update && sudo apt-get install -y xvfb libgl1-mesa-dri libglx-mesa0
       - uses: julia-actions/setup-julia@v2
         with:
           version: '1'
@@ -24,8 +27,8 @@ jobs:
       - name: Install docs dependencies
         run: julia --project=docs -e 'using Pkg; Pkg.develop(PackageSpec(path=pwd())); Pkg.instantiate()'
       - name: Build and deploy
-        run: julia --project=docs docs/make.jl
+        run: xvfb-run -a -s "-screen 0 1280x1024x24" julia --project=docs docs/make.jl
         env:
-          JULIA_GLFW_PLATFORM: "null"     # no display needed to load the package
+          LIBGL_ALWAYS_SOFTWARE: "1"
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DOCUMENTER_KEY: ${{ secrets.DOCUMENTER_KEY }}

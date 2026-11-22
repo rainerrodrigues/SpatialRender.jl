@@ -49,22 +49,61 @@ end
 function OctreeCloud(dir::AbstractString; name=basename(normpath(dir)), point_budget::Integer=3_000_000,
                      min_node_pixels::Real=80, point_size::Real=2.0, color_mode=nothing,
                      adaptive_size::Bool=true)
-    idx = JSON3.read(read(joinpath(dir, "octree.json"), String))
-    idx.version == OCTREE_VERSION || error("$dir was built by an older SpatialRender (octree format $(idx.version), " *
-        "this version reads $OCTREE_VERSION); rebuild it with build_octree")
-    v3(x) = Vec3f(x[1], x[2], x[3])
-    byname = Dict{String, Int}(String(nd.name) => i for (i, nd) in enumerate(idx.nodes))
-    nodes = [OctreeNode(String(nd.name), nd.depth, AABB(v3(nd.lo), v3(nd.hi)), nd.offset, nd.count,
-                        Int32[byname[String(c)] for c in nd.children]) for nd in idx.nodes]
+    point_budget > 0 || throw(ArgumentError("point_budget must be positive"))
+    min_node_pixels > 0 || throw(ArgumentError("min_node_pixels must be positive"))
+    index = joinpath(dir, "octree.json")
+    isfile(index) || throw(ArgumentError("$dir is not an octree directory (no octree.json); create one with build_octree"))
+    idx = try
+        JSON3.read(read(index, String))
+    catch e
+        throw(ArgumentError("$index is not valid JSON: " * first(split(sprint(showerror, e), '\n'))))
+    end
+    bad(msg) = throw(ArgumentError("$index: $msg (rebuild the directory with build_octree)"))
+    idx isa JSON3.Object || bad("expected a JSON object")
+    version = get(idx, :version, nothing)
+    version == OCTREE_VERSION || bad("octree format $(repr(version)); this version of SpatialRender reads format $OCTREE_VERSION")
+    num(o, k) = (x = get(o, k, nothing); x isa Real ? x : bad("field `$k` missing or not a number"))
+    vec3(o, k) = (x = get(o, k, nothing);
+                  x isa AbstractVector && length(x) == 3 && all(v -> v isa Real, x) ? Vec3f(x[1], x[2], x[3]) :
+                  bad("field `$k` must be a list of 3 numbers"))
+    obj(o, k) = (x = get(o, k, nothing); x isa JSON3.Object ? x : bad("field `$k` missing or not an object"))
+    origin = let x = get(idx, :origin, nothing)          # Float64: survey coordinates need it
+        x isa AbstractVector && length(x) == 3 && all(v -> v isa Real, x) ? Vec3d(x[1], x[2], x[3]) :
+        bad("field `origin` must be a list of 3 numbers")
+    end
+    rawnodes = get(idx, :nodes, nothing)
+    rawnodes isa AbstractVector && !isempty(rawnodes) || bad("no `nodes` list")
+    byname = Dict{String, Int}()
+    for (i, nd) in enumerate(rawnodes)
+        nd isa JSON3.Object && get(nd, :name, nothing) isa AbstractString || bad("node $i has no name")
+        byname[String(nd.name)] = i
+    end
+    nodes = map(enumerate(rawnodes)) do (i, nd)
+        kids = get(nd, :children, Any[])
+        kids isa AbstractVector || bad("node $(nd.name): `children` must be a list")
+        OctreeNode(String(nd.name), Int(num(nd, :depth)), AABB(vec3(nd, :lo), vec3(nd, :hi)),
+                   Int(num(nd, :offset)), Int(num(nd, :count)),
+                   Int32[get(byname, String(c), 0) == 0 ? bad("node $(nd.name): unknown child $c") : byname[String(c)]
+                         for c in kids])
+    end
+    nodes[1].name == "r" || bad("the root node must be listed first")
     total = sum(nd.count for nd in nodes)
-    data = open(io -> Mmap.mmap(io, Vector{PointVertex}, total), joinpath(dir, "nodes.bin"))
-    mode = something(color_mode, idx.has_rgb ? COLOR_RGB : COLOR_HEIGHT)
-    root = findfirst(nd -> nd.name == "r", nodes)
-    root == 1 || error("octree index must list the root first")
-    OctreeCloud(String(name), String(dir), nodes, data, OffsetFrame(Vec3d(idx.origin...)),
-                AABB(v3(idx.bounds.lo), v3(idx.bounds.hi)), idx.points, point_budget,
+    all(nd -> 0 <= nd.offset && nd.offset + nd.count <= total, nodes) || bad("a node's points lie outside nodes.bin")
+    bin = joinpath(dir, "nodes.bin")
+    isfile(bin) || bad("nodes.bin is missing")
+    filesize(bin) == total * sizeof(PointVertex) ||
+        bad("nodes.bin holds $(filesize(bin)) bytes, expected $(total * sizeof(PointVertex)) (truncated or from another version?)")
+    data = open(io -> Mmap.mmap(io, Vector{PointVertex}, total), bin)
+    has_rgb = get(idx, :has_rgb, false) === true
+    spacing_div = let x = get(idx, :spacing_div, 128)     # older indexes lack it: 128 was the default
+        x isa Integer && x > 0 ? Int(x) : bad("field `spacing_div` must be a positive integer")
+    end
+    mode = something(color_mode, has_rgb ? COLOR_RGB : COLOR_HEIGHT)
+    bnds = obj(idx, :bounds)
+    OctreeCloud(String(name), String(dir), nodes, data, OffsetFrame(origin),
+                AABB(vec3(bnds, :lo), vec3(bnds, :hi)), Int(num(idx, :points)), Int(point_budget),
                 Float32(min_node_pixels), Float32(point_size), Int32(mode), true, IDENTITY4, 0,
-                Int(get(idx, :spacing_div, 128)), adaptive_size, _octant_table(nodes))
+                spacing_div, adaptive_size, _octant_table(nodes))
 end
 
 bounds(o::OctreeCloud) = o.bounds
@@ -157,3 +196,5 @@ function select_nodes!(out::Vector{Int32}, wanted::Vector{Int32}, o::OctreeCloud
     end
     return out, wanted
 end
+
+layer_summary(o::OctreeCloud) = "$(o.npoints) points in $(length(o.nodes)) nodes, out-of-core"

@@ -76,6 +76,8 @@ include("render/gl/octree_gl.jl")
 include("render/gl/renderer.jl")
 include("render/gpu_select.jl")
 include("render/viewer.jl")
+include("render/offscreen.jl")
+include("render/png.jl")
 
 # ---- ROS 2 bag replay ----------------------------------------------------
 include("ros/mcap.jl")

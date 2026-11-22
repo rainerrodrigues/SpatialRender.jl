@@ -124,3 +124,5 @@ function Base.empty!(s::StreamingPointCloud)
     end
     return s
 end
+
+layer_summary(s::StreamingPointCloud) = "$(length(s)) of $(capacity(s)) points, streaming"

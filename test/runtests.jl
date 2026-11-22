@@ -724,7 +724,8 @@ end
     good = save_las(tmp("edge.las"), pc; frame=fr)
     b = read(good)
     # truncated (interrupted download): the complete records are read, with a warning
-    write(tmp("trunc.las"), b[1:end-26*10-5])
+    rl0 = Int(reinterpret(UInt16, b[106:107])[1])          # record length from the header
+    write(tmp("trunc.las"), b[1:end-rl0*10-5])
     t, _ = @test_logs (:warn, r"holds 39 complete records") load_las(tmp("trunc.las"))
     @test length(t) == 39
     # header box wrong (zeros): origin comes from the first point, local coords stay small
@@ -878,6 +879,66 @@ end
     @test_throws ArgumentError open_bag(path; missing_frames=:guess)
 end
 
+@testset "robustness: validation and fallbacks" begin
+    # GPU selection with simulated drivers (no real GL involved)
+    sel(; probe, cands=["NVIDIA", "AMD"]) = withenv("GALLIUM_DRIVER" => nothing, "MESA_D3D12_DEFAULT_ADAPTER_NAME" => nothing,
+                                                    "SPATIALRENDER_GPU_AUTOCONFIG" => nothing) do
+        msg = configure_gpu!(; force=true, wsl=true, candidates=cands, probe, reinit=() -> nothing)
+        (msg, get(ENV, "GALLIUM_DRIVER", nothing), get(ENV, "MESA_D3D12_DEFAULT_ADAPTER_NAME", nothing))
+    end
+    tried = String[]
+    msg, gd, ad = sel(probe=() -> (push!(tried, ENV["MESA_D3D12_DEFAULT_ADAPTER_NAME"]);
+                                   tried[end] == "AMD" ? "D3D12 (Fake AMD GPU)" : "llvmpipe (LLVM)"))
+    @test tried == ["NVIDIA", "AMD"] && occursin("Fake AMD GPU", msg) && gd == "d3d12" && ad == "AMD"
+    msg, gd, ad = sel(probe=() -> nothing)                       # no adapter works
+    @test occursin("no D3D12 adapter worked", msg) && gd === nothing && ad === nothing   # environment restored
+    msg, _, _ = withenv("MESA_D3D12_DEFAULT_ADAPTER_NAME" => "Intel", "GALLIUM_DRIVER" => nothing,
+                        "SPATIALRENDER_GPU_AUTOCONFIG" => nothing) do
+        configure_gpu!(; force=true, wsl=true, probe=() -> (ENV["MESA_D3D12_DEFAULT_ADAPTER_NAME"] == "Intel" ? "D3D12 (Intel)" : nothing),
+                       reinit=() -> nothing), nothing, nothing
+    end
+    @test occursin("Intel", msg)                                  # a user-chosen adapter is the only candidate
+    SpatialRender.GPU_CONFIGURED[] = false                        # let the GL tests configure normally
+
+    # argument validation fails early with a clear message
+    pc = PointCloud([Vec3f(i, 0, 0) for i in 1:20])
+    @test_throws ArgumentError build_point_index(pc; chunk_size=0)
+    @test_throws ArgumentError statistical_outlier_mask(pc; k=0)
+    @test_throws ArgumentError radius_outlier_mask(pc; radius=0)
+    @test_throws ArgumentError fit_ground_plane(pc; threshold=-1)
+    @test_throws ArgumentError Camera(; fov=0)
+    @test_throws ArgumentError Camera(; near=10, far=1)
+    @test_throws ArgumentError build_octree(pc, tmp("never"); node_capacity=0)
+
+    # a damaged octree directory is explained, not a cryptic MethodError
+    good = build_octree(PointCloud([Vec3f(rand(Xoshiro(i), 3)...) for i in 1:500]), tmp("octv"); node_capacity=100)
+    idx = read(joinpath(good, "octree.json"), String)
+    function broken(edit_json; truncate_bin=false)
+        d = tmp("octbad_$(rand(UInt32))"); mkpath(d)
+        write(joinpath(d, "octree.json"), edit_json(idx))
+        bin = read(joinpath(good, "nodes.bin"))
+        write(joinpath(d, "nodes.bin"), truncate_bin ? bin[1:end-20] : bin)
+        d
+    end
+    msg(f) = try f(); "no error" catch e; sprint(showerror, e) end
+    @test occursin("octree format", msg(() -> OctreeCloud(broken(j -> replace(j, "\"version\":2" => "\"version\":1")))))
+    @test occursin("nodes", msg(() -> OctreeCloud(broken(j -> replace(j, "\"nodes\":" => "\"nodez\":")))))
+    @test occursin("origin", msg(() -> OctreeCloud(broken(j -> replace(j, "\"origin\":" => "\"origin_\":")))))
+    @test occursin("truncated", msg(() -> OctreeCloud(broken(identity; truncate_bin=true))))
+    @test occursin("not valid JSON", msg(() -> OctreeCloud(broken(j -> j[1:end÷2]))))
+    @test occursin("no octree.json", msg(() -> OctreeCloud(tmp("empty_dir_$(rand(UInt32))") |> mkpath)))
+    @test_throws ArgumentError OctreeCloud(good; point_budget=0)
+    @test length(OctreeCloud(good)) == 500                       # the intact one still loads
+
+    # Scene printing and removal
+    s = Scene(); m = add!(s, TriMesh(MeshVertex[], UInt32[]; name="part"))
+    add!(s, StreamingPointCloud(10; name="live")); add!(s, Annotations(name="notes"))
+    txt = sprint(show, MIME"text/plain"(), s)
+    @test occursin("3 layers", txt) && occursin("part", txt) && occursin("streaming", txt) && occursin("labels", txt)
+    v0 = s.version; delete!(s, m)
+    @test length(s.layers) == 2 && s.version > v0
+end
+
 @testset "Aqua quality checks" begin
     Aqua.test_all(SpatialRender)
 end
@@ -943,7 +1004,7 @@ end
         tri = TriMesh([MeshVertex(Vec3f(-1, -1, 0), Vec3f(0, 0, 1)), MeshVertex(Vec3f(1, -1, 0), Vec3f(0, 0, 1)),
                        MeshVertex(Vec3f(0, 1, 0), Vec3f(0, 0, 1))], UInt32[0, 1, 2]; color=Vec4f(1, 0, 0, 1))
         add!(s2, tri)
-        live = add!(s2, StreamingPointCloud(1000; point_size=6))
+        live = add!(s2, StreamingPointCloud(1000; point_size=6, color_mode=COLOR_INTENSITY))   # grey: not counted as red
         push_scan!(live, [Vec3f(x, y, 0.5) for x in 2.5:0.1:3.5, y in -1:0.1:1][:])   # beside the triangle
         cam = Camera(position=Vec3d(0, -0.01, 10), target=Vec3d(0, 0, 0), aspect=1.0)
         reddish(img) = count(p -> p[1] > 150 && p[2] < 80 && p[3] < 80, img)
@@ -1028,6 +1089,59 @@ end
                 @test 0 < SpatialRender._effective_spacing(oc, g, i) <= own
             end
             SpatialRender.release!(r)
+        end
+
+        # the interactive viewer, driven through its own handlers in a hidden window
+        let GLFW = SpatialRender.GLFW
+            sv = Scene()
+            cloud = add!(sv, PointCloud([Vec3f(x, y, 0.1x) for x in -5:0.25:5 for y in -5:0.25:5]; intensity=fill(0.5, 41 * 41)))
+            mesh = add!(sv, load_stl(save_stl(tmp("v.stl"), random_mesh(Xoshiro(3), 20))))
+            v = open_viewer(sv; block=false, visible=false, width=320, height=240,
+                            camera=Camera(position=Vec3d(0, -0.01, 30), target=Vec3d(0, 0, 0)))
+            @test v.open && step!(v)
+            v.title_time = 0; step!(v)
+            @test !isempty(v.renderer.hud) && occursin("fps", v.renderer.hud[1])
+            key(k) = SpatialRender._on_key(v, k, GLFW.PRESS)
+            s = v.renderer.settings
+            key(GLFW.KEY_3); @test cloud.color_mode == Int32(COLOR_CLASSIFICATION)
+            key(GLFW.KEY_5); @test cloud.color_mode == Int32(COLOR_AGE)
+            ps = cloud.point_size; key(GLFW.KEY_EQUAL); @test cloud.point_size == ps + 1
+            key(GLFW.KEY_MINUS); @test cloud.point_size == ps
+            key(GLFW.KEY_P); @test s.point_size_mode == :world
+            key(GLFW.KEY_L); @test isinf(s.lod_density)
+            key(GLFW.KEY_M); @test mesh.wireframe
+            key(GLFW.KEY_G); @test !s.grid
+            key(GLFW.KEY_B); @test !s.edl
+            key(GLFW.KEY_I); @test !s.hud
+            key(GLFW.KEY_O); @test v.controller.camera.ortho
+            key(GLFW.KEY_O); key(GLFW.KEY_T)
+            @test SpatialRender.forward(v.controller.camera)[3] < -0.99      # top view looks straight down
+            key(GLFW.KEY_F); @test step!(v)
+            # measure mode through real mouse-button events (press + release = click)
+            key(GLFW.KEY_R); @test v.measuring
+            w, h = v.controller.viewport
+            for x in (w / 2 - 40, w / 2 + 40)
+                SpatialRender.cursor!(v.controller, x, h / 2)
+                SpatialRender._on_mouse_button(v, GLFW.MOUSE_BUTTON_LEFT, GLFW.PRESS, 0)
+                SpatialRender._on_mouse_button(v, GLFW.MOUSE_BUTTON_LEFT, GLFW.RELEASE, 0)
+            end
+            @test v.annotations !== nothing && length(v.annotations.lines) == 1
+            key(GLFW.KEY_BACKSPACE); @test isempty(v.annotations.lines)
+            # a failing handler is reported and the viewer keeps running
+            @test_logs (:error, r"error while handling a test") SpatialRender._safely(() -> error("boom"), "a test")
+            @test step!(v)
+            # playback keys with a bag player attached
+            p = open_bag(tmp("player.mcap"); history=1.0, scene=Scene())
+            vp = open_viewer(p.scene; block=false, visible=false, width=200, height=150, player=p)
+            SpatialRender._on_key(vp, GLFW.KEY_SPACE, GLFW.PRESS); @test p.playing
+            SpatialRender._on_key(vp, GLFW.KEY_RIGHT_BRACKET, GLFW.PRESS); @test p.rate == 2.0
+            SpatialRender._on_key(vp, GLFW.KEY_RIGHT, GLFW.PRESS); @test current_time(p) >= 1.0
+            SpatialRender._on_key(vp, GLFW.KEY_HOME, GLFW.PRESS); @test current_time(p) == 0.0
+            vp.title_time = 0; step!(vp); step!(vp)
+            @test any(l -> occursin("PLAY", l), vp.renderer.hud)
+            close(vp); close(v)
+            @test !v.open && !step!(v)
+            @test_throws ArgumentError open_viewer(sv; block=false, visible=false, width=0)
         end
     end
 end

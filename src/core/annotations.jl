@@ -106,3 +106,5 @@ function Base.empty!(a::Annotations)
     end
     return a
 end
+
+layer_summary(a::Annotations) = "$(length(a.labels)) labels, $(length(a.lines)) lines"

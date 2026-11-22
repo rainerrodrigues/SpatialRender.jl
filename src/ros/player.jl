@@ -67,11 +67,12 @@ function _to_fixed(p::BagPlayer, frame::AbstractString, stamp::Int64)
     T = lookup_transform(p.tree, p.fixed_frame, frame, stamp)
     T === nothing || return T
     hint = "supply its mounting with open_bag(...; static_transforms = [...])"
-    if p.missing_frames == :robot && p.robot_frame !== nothing && !_is_world_frame(frame)
-        R = lookup_transform(p.tree, p.fixed_frame, p.robot_frame, stamp)
+    robot = p.robot_frame
+    if p.missing_frames == :robot && robot !== nothing && !_is_world_frame(frame)
+        R = lookup_transform(p.tree, p.fixed_frame, robot, stamp)
         if R !== nothing
             _warn_once(p, frame, "frame \"$frame\" is not in the TF tree (no /tf_static recorded?); " *
-                       "drawing it at \"$(p.robot_frame)\" ($hint)")
+                       "drawing it at \"$robot\" ($hint)")
             return R
         end
     end
@@ -149,6 +150,10 @@ function open_bag(path::AbstractString; scene::Scene=Scene(), fixed_frame=nothin
                   max_tf_gap::Real=2.0, skip_gaps::Bool=true)
     missing_frames in (:robot, :origin, :skip) ||
         throw(ArgumentError("missing_frames must be :robot, :origin or :skip"))
+    history === :auto || (history isa Real && history > 0) ||
+        throw(ArgumentError("history must be :auto or a positive number of seconds"))
+    cloud_capacity >= 1 || throw(ArgumentError("cloud_capacity must be at least 1"))
+    max_tf_gap > 0 || throw(ArgumentError("max_tf_gap must be positive"))
     bag = open_mcap(path)
     isempty(bag.messages) && error("$path contains no messages")
     tree = FrameTree(; max_gap=max_tf_gap)

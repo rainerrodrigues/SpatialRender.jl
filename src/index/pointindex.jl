@@ -80,6 +80,7 @@ and shuffles points within each chunk. Extra memory while building is one
 `Int32` permutation (4 bytes per point); what stays is one entry per chunk.
 """
 function build_point_index(pc::PointCloud; chunk_size::Int=8192, seed::Int=1)
+    chunk_size >= 1 || throw(ArgumentError("chunk_size must be at least 1"))
     n = length(pc)
     perm = collect(Int32, 1:n)
     pos = Positions(pc.vertices)

@@ -40,17 +40,19 @@ end
 "Bounds of all visible layers in the scene frame (poses applied)."
 bounds(s::Scene) = reduce(union, (world_bounds(l) for l in s.layers if l.visible); init=AABB())
 
+# One-line summaries: printing a layer must not dump its vertices.
+"Short description of a layer's contents (each layer type adds a method)."
+layer_summary(l::Layer) = ""
+layer_summary(l::PointCloud) = "$(length(l)) points"
+layer_summary(l::TriMesh) = "$(ntriangles(l)) triangles"
+layer_summary(l::LineLayer) = "$(length(l.polylines)) polylines"
+
+Base.show(io::IO, l::Layer) = print(io, nameof(typeof(l)), " \"", l.name, "\" (", layer_summary(l), ")")
+
 function Base.show(io::IO, ::MIME"text/plain", s::Scene)
     println(io, "Scene with ", length(s.layers), " layer", length(s.layers) == 1 ? "" : "s",
             " (frame: ", nameof(typeof(s.frame)), ")")
     for l in s.layers
-        print(io, "  ", rpad(nameof(typeof(l)), 20), rpad(l.name, 24))
-        l isa PointCloud && print(io, length(l), " points")
-        l isa TriMesh && print(io, ntriangles(l), " triangles")
-        l isa LineLayer && print(io, length(l.polylines), " polylines")
-        l isa StreamingPointCloud && print(io, length(l), " of ", capacity(l), " points (streaming)")
-        l isa OctreeCloud && print(io, length(l), " points (out-of-core)")
-        l isa Annotations && print(io, length(l.labels), " labels, ", length(l.lines), " lines")
-        println(io)
+        println(io, "  ", rpad(nameof(typeof(l)), 20), " ", rpad(l.name, 34), " ", layer_summary(l))
     end
 end
