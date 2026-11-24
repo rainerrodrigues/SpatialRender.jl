@@ -23,7 +23,7 @@ short walk-throughs whose code runs on every documentation build.
 
 ```julia
 using Pkg
-Pkg.add(url = "https://github.com/rainerrodrigues/SpatialRender.jl")
+Pkg.add("SpatialRender")
 ```
 
 ## Quick start

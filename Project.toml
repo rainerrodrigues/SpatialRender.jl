@@ -1,6 +1,6 @@
 name = "SpatialRender"
 uuid = "5111cc20-c906-4bb2-bdae-df40a8aed9d2"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Rainer Rodrigues"]
 
 [deps]
@@ -22,10 +22,12 @@ Zstd_jll = "3161d3a3-bdf6-5164-811a-617609db77b4"
 FileIO = "5789e2e9-d7fb-5bc7-8068-2c6fae9b9549"
 GeoInterface = "cf35fbd7-0cd7-5166-be24-54bfbe79505f"
 GeometryBasics = "5c1252a2-5f33-56bf-86c9-59e7332b4326"
+KaosCleaner = "33cd8d56-0019-45b6-a585-d49e6d89a734"
 
 [extensions]
 SpatialRenderGeoInterfaceExt = "GeoInterface"
 SpatialRenderGeometryBasicsExt = ["GeometryBasics", "FileIO"]
+SpatialRenderKaosCleanerExt = "KaosCleaner"
 
 [compat]
 Aqua = "0.8"
@@ -34,6 +36,7 @@ GLFW = "4.0.0"
 GeoInterface = "1"
 GeometryBasics = "0.5"
 JSON3 = "1.14.4"
+KaosCleaner = "0.7"
 LinearAlgebra = "1"
 Lz4_jll = "1"
 Mmap = "1"

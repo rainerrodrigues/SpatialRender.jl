@@ -231,7 +231,7 @@ end
     @test length(out) < length(above) && length(out) > 2800
     @test count(keep_mask(pipe, pc)) == length(out)
 
-    if !haskey(Base.loaded_modules, SpatialRender.KAOSCLEANER)
+    if Base.get_extension(SpatialRender, :SpatialRenderKaosCleanerExt) === nothing
         @test_throws ErrorException keep_mask(AttributeOutlierFilter(), pc)   # engine not loaded: clear error
     end
     @test_throws ArgumentError keep_mask(AttributeOutlierFilter(method="nope"), pc)

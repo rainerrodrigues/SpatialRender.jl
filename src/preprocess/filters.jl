@@ -273,9 +273,7 @@ Methods: `"zscore"`, `"iqr"`, `"mad"` (default, robust) and `"hampel"`
 follows a drifting signal: intensity spikes along a scan line).
 
 The statistics are computed by the `KaosCleaner` engine: `using KaosCleaner`
-enables this filter. KaosCleaner is not registered, so it is found at run time
-instead of being a declared dependency; install it with
-`Pkg.add(url = "https://github.com/rainerrodrigues/KaosCleaner", subdir = "julia/KaosCleaner.jl")`.
+enables this filter (package extension; install with `Pkg.add("KaosCleaner")`).
 """
 Base.@kwdef struct AttributeOutlierFilter <: PointFilter
     attributes::Vector{Symbol} = [:z, :intensity]
@@ -284,34 +282,16 @@ Base.@kwdef struct AttributeOutlierFilter <: PointFilter
     window::Int = 7
 end
 
-# KaosCleaner (unregistered, so not in Project.toml: General refuses unregistered
-# dependencies, weak ones included) is used once the user has loaded it.
-const KAOSCLEANER = Base.PkgId(Base.UUID("33cd8d56-0019-45b6-a585-d49e6d89a734"), "KaosCleaner")
 const OUTLIER_METHODS = ("zscore", "iqr", "mad", "hampel")
 
-function _kaoscleaner()
-    m = get(Base.loaded_modules, KAOSCLEANER, nothing)
-    m === nothing && error("AttributeOutlierFilter needs the KaosCleaner engine: run `using KaosCleaner` first ",
-                           "(install with `Pkg.add(url = \"https://github.com/rainerrodrigues/KaosCleaner\", subdir = \"julia/KaosCleaner.jl\")`)")
-    return m
-end
-
-# A point survives when none of the selected attribute columns flags it. Hampel
-# windows follow GPS time when the cloud has it (scan order otherwise).
+# The statistics live in the SpatialRenderKaosCleanerExt package extension.
 function keep_mask(f::AttributeOutlierFilter, pc::PointCloud)
     f.method in OUTLIER_METHODS ||
         throw(ArgumentError("unknown outlier method $(repr(f.method)); use one of $(join(OUTLIER_METHODS, ", "))"))
-    K = _kaoscleaner()
-    # invokelatest: KaosCleaner's methods may be newer than the calling code
-    k = something(f.threshold, Base.invokelatest(getproperty, K, :OUTLIER_DEFAULTS)[f.method])
-    outlier_mask = Base.invokelatest(getproperty, K, :outlier_mask)
-    times = isempty(pc.gps_time) ? nothing : pc.gps_time
-    keep = trues(length(pc))
-    for a in f.attributes
-        flagged = Base.invokelatest(outlier_mask, attribute_column(pc, a), f.method, k, f.window, times)
-        keep .&= .!flagged
-    end
-    return keep
+    ext = Base.get_extension(@__MODULE__, :SpatialRenderKaosCleanerExt)
+    ext === nothing && error("AttributeOutlierFilter needs the KaosCleaner engine: run `using KaosCleaner` first ",
+                             "(install with `Pkg.add(\"KaosCleaner\")`)")
+    return ext.attribute_keep_mask(f, pc)
 end
 
 "Column of one point attribute as Float64."

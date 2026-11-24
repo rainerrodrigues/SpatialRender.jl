@@ -8,7 +8,7 @@ on this page runs when the documentation is built; the images are its output.
 
 ```julia
 using Pkg
-Pkg.add(url = "https://github.com/rainerrodrigues/SpatialRender.jl")
+Pkg.add("SpatialRender")
 ```
 
 ## A scene

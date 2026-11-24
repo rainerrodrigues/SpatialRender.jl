@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.1
+
+- KaosCleaner is now in Julia's General registry, so `AttributeOutlierFilter`
+  is again a package extension (`SpatialRenderKaosCleanerExt`, KaosCleaner
+  0.7): install with `Pkg.add("KaosCleaner")` and enable with
+  `using KaosCleaner`.
+- Install instructions use `Pkg.add("SpatialRender")`.
+
 ## v0.1.0 (2026-11-22)
 
 First release.

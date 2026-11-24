@@ -36,7 +36,7 @@ clean = pc |> (GroundPlaneFilter(mode = :classify) |>
                StatisticalOutlierFilter(k = 8, nsigma = 2.0) |>
                VoxelDownsample(0.05))
 
-using KaosCleaner                                      # enables AttributeOutlierFilter
+using KaosCleaner                                      # enables the extension
 clean = AttributeOutlierFilter(attributes = [:intensity], method = "hampel")(clean)
 ```
 
@@ -55,15 +55,9 @@ apply_filter
 
 | Load | Enables |
 |---|---|
-| `KaosCleaner`¹ | `AttributeOutlierFilter` (per-attribute 1-D outlier statistics; Hampel windows follow GPS time) |
+| `KaosCleaner` | `AttributeOutlierFilter` (per-attribute 1-D outlier statistics; Hampel windows follow GPS time) |
 | `GeometryBasics` + `FileIO` (+ `MeshIO`) | `TriMesh(::GeometryBasics.Mesh)`; `load_mesh` falls back to FileIO for PLY, OFF, … |
 | `GeoInterface` (e.g. via `GeoDataFrames`) | `gis_layer(df.geometry; frame = scene.frame)` for shapefiles, GeoPackage, any OGR source |
-
-¹ KaosCleaner (a Python package with a Julia engine) is not yet in Julia's
-General registry, so SpatialRender finds it at run time instead of declaring
-it as a package extension: install it with
-`Pkg.add(url = "https://github.com/rainerrodrigues/KaosCleaner", subdir = "julia/KaosCleaner.jl")` and load it
-with `using KaosCleaner`.
 
 `GeometryBasics` also exports `Vec3f`; qualify it (`SpatialRender.Vec3f`)
 when using both.
