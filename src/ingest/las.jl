@@ -1,8 +1,7 @@
 # ASPRS LAS 1.0–1.4, point data record formats 0–10, read through Mmap.
 #
 # LAZ is the same format compressed with LASzip; it is decompressed with the
-# `laszip` (LAStools / LASzip) or `pdal` command-line tool when one is
-# installed, then read as LAS.
+# `laszip` executable that LAStools_jll ships, then read as LAS.
 
 """
 Fields of a LAS public header block that the reader needs.
@@ -170,28 +169,32 @@ end
 """
     load_laz(path; kwargs...) -> (PointCloud, frame)
 
-Decompress a LAZ file with `laszip` or `pdal` (whichever is on `PATH`) into
-a temporary LAS file and read it with [`load_las`](@ref).
+Decompress a LAZ file into a temporary LAS file with the `laszip` executable
+from LAStools_jll (installed with SpatialRender) and read it with
+[`load_las`](@ref). On a platform without a LAStools_jll build, a `laszip` or
+`pdal` on `PATH` is used instead.
 """
 function load_laz(path::AbstractString; kwargs...)
+    isfile(path) || throw(SystemError("opening LAZ file $(repr(path))", 2))
     tmp = tempname() * ".las"
     try
-        if Sys.which("laszip") !== nothing
-            run(pipeline(`laszip -i $path -o $tmp`; stdout=devnull, stderr=devnull))
-        elseif Sys.which("laszip64") !== nothing
-            run(pipeline(`laszip64 -i $path -o $tmp`; stdout=devnull, stderr=devnull))
-        elseif Sys.which("pdal") !== nothing
-            run(pipeline(`pdal translate $path $tmp`; stdout=devnull, stderr=devnull))
-        else
-            error("reading LAZ needs the `laszip` (https://github.com/LASzip/LASzip) or `pdal` " *
-                  "command-line tool on PATH; or convert the file to LAS first")
-        end
+        run(pipeline(_laz_command(path, tmp); stdout=devnull, stderr=devnull))
         kw = Dict{Symbol, Any}(kwargs)
         get!(kw, :name, basename(path))
         return load_las(tmp; kw...)
     finally
         rm(tmp; force=true)
     end
+end
+
+function _laz_command(src, dst)
+    LAStools_jll.is_available() && return `$(LAStools_jll.laszip()) -i $src -o $dst`
+    for exe in ("laszip", "laszip64")
+        Sys.which(exe) === nothing || return `$exe -i $src -o $dst`
+    end
+    Sys.which("pdal") === nothing || return `pdal translate $src $dst`
+    error("reading LAZ needs `laszip`: LAStools_jll has no build for this platform, ",
+          "and neither `laszip` nor `pdal` is on PATH; or convert the file to LAS first")
 end
 
 """

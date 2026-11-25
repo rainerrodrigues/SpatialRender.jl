@@ -1,11 +1,12 @@
 name = "SpatialRender"
 uuid = "5111cc20-c906-4bb2-bdae-df40a8aed9d2"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["Rainer Rodrigues"]
 
 [deps]
 GLFW = "f7f18e0c-5ee9-5ccd-a5bf-e8befd85ed98"
 JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
+LAStools_jll = "2502db7c-e51e-5cc5-b107-5f8e6dbfe9b6"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 Lz4_jll = "5ced341a-0733-55b8-9ab6-a4889d929147"
 Mmap = "a63ad114-7e13-5084-954f-fe012c677804"
@@ -17,6 +18,7 @@ StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 Zlib_jll = "83775a58-1f1d-513f-b197-d71354ab007a"
 Zstd_jll = "3161d3a3-bdf6-5164-811a-617609db77b4"
+glslang_jll = "6fd5517d-459c-5c5a-9b1a-c968b4e37a81"
 
 [weakdeps]
 FileIO = "5789e2e9-d7fb-5bc7-8068-2c6fae9b9549"
@@ -37,6 +39,7 @@ GeoInterface = "1"
 GeometryBasics = "0.5"
 JSON3 = "1.14.4"
 KaosCleaner = "0.7"
+LAStools_jll = "2"
 LinearAlgebra = "1"
 Lz4_jll = "1"
 Mmap = "1"
@@ -49,6 +52,7 @@ Statistics = "1"
 Test = "1"
 Zlib_jll = "1"
 Zstd_jll = "1"
+glslang_jll = "15"
 julia = "1.10"
 
 [extras]

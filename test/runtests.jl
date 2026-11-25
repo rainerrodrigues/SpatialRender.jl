@@ -154,6 +154,29 @@ end
     @test s.frame isa OffsetFrame && length(s.layers) == 1
 end
 
+@testset "LAZ through LAStools_jll" begin
+    rng = Xoshiro(4)
+    n = 3000
+    fr = OffsetFrame(Vec3d(500_000.0, 4_000_000.0, 50.0))
+    pc = PointCloud([Vec3f(50rand(rng), 50rand(rng), 5rand(rng)) for _ in 1:n];
+                    intensity=rand(rng, n), classification=rand(rng, 0:9, n))
+    pc.gps_time = collect(range(0.0, 1.0, length=n))
+    save_las(tmp("z.las"), pc; frame=fr)
+    @test SpatialRender.LAStools_jll.is_available()
+    run(pipeline(`$(SpatialRender.LAStools_jll.laszip()) -i $(tmp("z.las")) -o $(tmp("z.laz"))`; stdout=devnull, stderr=devnull))
+    @test filesize(tmp("z.laz")) < filesize(tmp("z.las"))
+    @test read_las_header(tmp("z.laz")).compressed
+    a, fa = load_las(tmp("z.las"); frame=fr, gps_time=true)
+    b, fb = load_laz(tmp("z.laz"); frame=fr, gps_time=true)
+    @test length(b) == n && b.name == "z.laz"
+    @test [v.position for v in b.vertices] == [v.position for v in a.vertices]
+    @test [v.classification for v in b.vertices] == [v.classification for v in a.vertices]
+    @test b.gps_time == a.gps_time
+    c, _ = load_las(tmp("z.laz"); frame=fr)              # .laz extension dispatches to load_laz
+    @test length(c) == n
+    @test_throws SystemError load_laz(tmp("missing.laz"))
+end
+
 @testset "GeoJSON" begin
     write(tmp("roads.geojson"), """
     {"type": "FeatureCollection", "features": [
@@ -940,6 +963,17 @@ end
     @test occursin("3 layers", txt) && occursin("part", txt) && occursin("streaming", txt) && occursin("labels", txt)
     v0 = s.version; delete!(s, m)
     @test length(s.layers) == 2 && s.version > v0
+end
+
+@testset "shader validation through glslang_jll" begin
+    @test SpatialRender.glslang_jll.is_available()
+    res = validate_shaders(backend=:glslang)
+    @test length(res) == 2 * length(SpatialRender.ALL_SHADERS) && all(r -> r.ok, res)
+    bad = (name=:bad, vertex="#version 410 core\nvoid main() { gl_Position = vec4(undefined_name); }",
+           fragment="#version 410 core\nout vec4 c;\nvoid main() { c = vec4(1.0); }")
+    r = validate_shaders((bad,); backend=:glslang)
+    @test !r[1].ok && occursin("undefined_name", r[1].log) && r[2].ok
+    @test [x.ok for x in validate_shaders((bad,))] == [false, true]   # :auto prefers glslang
 end
 
 @testset "Aqua quality checks" begin

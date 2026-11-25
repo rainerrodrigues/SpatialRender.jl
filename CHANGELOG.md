@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.1.2
+
+- `load_laz` decompresses with the `laszip` executable from LAStools_jll, so
+  `Pkg.add("SpatialRender")` alone reads LAZ files: no LAStools or PDAL
+  installation needed. A `laszip` or `pdal` on `PATH` is used only on a
+  platform without a LAStools_jll build.
+- `validate_shaders(backend = :glslang)` uses `glslangValidator` from
+  glslang_jll instead of looking for it on `PATH`; the shader-lint CI job no
+  longer installs `glslang-tools`.
+
 ## v0.1.1
 
 - KaosCleaner is now in Julia's General registry, so `AttributeOutlierFilter`

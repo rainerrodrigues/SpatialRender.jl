@@ -4,8 +4,8 @@
 # sources once, key the artefact by a content hash, check the toolchain in
 # tests): programs are cached by the hash of their sources, so recreating a
 # renderer or hot-reloading identical sources never recompiles, and
-# `validate_shaders` checks every stage with `glslangValidator` when it is
-# installed (no GPU needed, usable in CI), or with the live GL driver.
+# `validate_shaders` checks every stage with `glslangValidator` from
+# glslang_jll (no GPU needed, usable in CI), or with the live GL driver.
 
 struct GLProgram
     id::GLuint
@@ -126,21 +126,29 @@ setuniform(p::GLProgram, s::Symbol, v::Vector{Vec4f}) =
     validate_shaders(sources=BUILTIN_SHADERS; backend=:auto) -> Vector{NamedTuple}
 
 Check that every shader stage compiles. `backend=:glslang` runs
-`glslangValidator` (no GPU or display needed), `backend=:gl` compiles in a
-hidden GLFW window with the real driver, `:auto` prefers glslang. Returns
+`glslangValidator`, the Khronos reference compiler shipped by glslang_jll (no
+GPU or display needed), `backend=:gl` compiles in a hidden GLFW window with the
+real driver, `:auto` prefers glslang. Returns
 one `(name, stage, ok, log)` record per stage; never throws on a shader
 error, so it suits CI reports.
 """
 function validate_shaders(sources=ALL_SHADERS; backend::Symbol=:auto)
-    tool = Sys.which("glslangValidator")
+    tool = _glslang_command()
     if backend == :glslang || (backend == :auto && tool !== nothing)
-        tool === nothing && error("glslangValidator not found on PATH")
+        tool === nothing && error("glslangValidator is unavailable: glslang_jll has no build for this platform ",
+                                  "and it is not on PATH")
         return _validate_glslang(sources, tool)
     end
     return _validate_gl(sources)
 end
 
-function _validate_glslang(sources, tool)
+function _glslang_command()
+    glslang_jll.is_available() && return glslang_jll.glslangValidator()
+    exe = Sys.which("glslangValidator")
+    return exe === nothing ? nothing : `$exe`
+end
+
+function _validate_glslang(sources, tool::Cmd)
     out = NamedTuple[]
     for s in sources, (stage, src, ext) in ((:vertex, s.vertex, "vert"), (:fragment, s.fragment, "frag"))
         path = tempname() * "." * ext

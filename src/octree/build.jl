@@ -270,7 +270,7 @@ end
 function _octree_source(path::AbstractString, chunk)
     data = Mmap.mmap(path)
     h = read_las_header(data)
-    h.compressed && error("LAZ input: decompress to LAS first (laszip / pdal)")
+    h.compressed && error("LAZ input: decompress to LAS first (load_laz, or `laszip` from LAStools_jll)")
     cls_off, rgb_off, gps_off = _las_layout(h.point_format)
     rl = h.record_length; base = h.offset_to_points
     imax = 1; rgbmax = 0

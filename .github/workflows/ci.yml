@@ -74,12 +74,10 @@ jobs:
           { echo '### Pipeline benchmark'; echo '```'; cat bench.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
   shader-lint:
-    # Every GLSL stage through the Khronos reference compiler (no GPU or display)
+    # Every GLSL stage through the Khronos reference compiler (glslang_jll; no GPU or display)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install glslang
-        run: sudo apt-get update && sudo apt-get install -y glslang-tools
       - uses: julia-actions/setup-julia@v2
         with:
           version: '1'

@@ -33,6 +33,8 @@ using StaticArrays
 import JSON3
 using ModernGL
 import GLFW
+import LAStools_jll
+import glslang_jll
 
 # ---- core (no GPU) --------------------------------------------------------
 include("util/compression.jl")
